@@ -7,7 +7,28 @@
  * Un outil = { name, description, parameters (JSON Schema), run(args) → string }
  */
 
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { DATA_DIR } = require('./db');
+
 const MAX_RESULT = 14000; // troncature des résultats d'outils pour protéger le contexte
+
+// Dossier où sont hébergées les images générées (servi publiquement sur /generated/)
+const GENERATED_DIR = path.join(DATA_DIR, 'generated');
+try { fs.mkdirSync(GENERATED_DIR, { recursive: true }); } catch {}
+
+function publicBase() {
+  return (process.env.LUSINE_PUBLIC_URL || '').replace(/\/+$/, '');
+}
+
+// Enregistre une image (base64) sur le serveur et renvoie son URL publique stable.
+function saveGeneratedImage(b64, ext = 'png') {
+  const file = `${Date.now().toString(36)}-${crypto.randomBytes(5).toString('hex')}.${ext}`;
+  fs.writeFileSync(path.join(GENERATED_DIR, file), Buffer.from(b64, 'base64'));
+  const base = publicBase();
+  return base ? `${base}/generated/${file}` : `/generated/${file}`;
+}
 
 function trunc(s, n = MAX_RESULT) {
   s = String(s ?? '');
@@ -427,32 +448,44 @@ register({
 });
 
 register({
-  id: 'openai_images', name: 'OpenAI Images (DALL·E)', icon: '🎨', category: 'IA',
-  description: 'Génération d\'images via l\'API OpenAI (DALL·E 3).',
-  fields: [{ key: 'apiKey', label: 'Clé API OpenAI', type: 'password', required: true }],
+  id: 'openai_images', name: 'OpenAI Images (GPT Image)', icon: '🎨', category: 'IA',
+  description: 'Génération d\'images via l\'API OpenAI (modèle GPT Image, ex-DALL·E). L\'image est hébergée sur ton serveur : l\'URL renvoyée est stable et n\'expire pas.',
+  fields: [
+    { key: 'apiKey', label: 'Clé API OpenAI', type: 'password', required: true },
+    { key: 'model', label: 'Modèle (optionnel)', placeholder: 'gpt-image-1 (défaut). Aussi : gpt-image-2' }
+  ],
   buildTools(data) {
+    const model = data.model || 'gpt-image-1';
     return [{
       name: 'generate_image',
-      description: 'Génère une image à partir d\'un prompt et retourne son URL.',
+      description: `Génère une image à partir d'un prompt (modèle ${model}) et retourne une URL stable hébergée sur le serveur.`,
       parameters: {
         type: 'object',
         properties: {
-          prompt: { type: 'string' },
-          size: { type: 'string', enum: ['1024x1024', '1792x1024', '1024x1792'] }
+          prompt: { type: 'string', description: 'Description de l\'image, de préférence en anglais.' },
+          size: { type: 'string', description: 'Taille. gpt-image-1 : 1024x1024 (carré), 1536x1024 (paysage), 1024x1536 (portrait), auto. Défaut 1024x1024.' },
+          quality: { type: 'string', description: 'low | medium | high | auto (défaut auto).' }
         },
         required: ['prompt']
       },
       run: async (args) => {
+        const body = { model, prompt: args.prompt, size: args.size || '1024x1024', n: 1 };
+        if (args.quality) body.quality = args.quality;
         const r = await doFetch('https://api.openai.com/v1/images/generations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.apiKey}` },
-          body: JSON.stringify({ model: 'dall-e-3', prompt: args.prompt, size: args.size || '1024x1024', n: 1 })
-        }, 120000);
-        try {
-          const j = JSON.parse(r.text);
-          if (j.data?.[0]?.url) return `Image générée : ${j.data[0].url}`;
-          return trunc(r.text);
-        } catch { return trunc(r.text); }
+          body: JSON.stringify(body)
+        }, 180000);
+        let j;
+        try { j = JSON.parse(r.text); } catch { return trunc(`HTTP ${r.status}\n${r.text}`); }
+        if (j.error) return `ERREUR génération image : ${j.error.message || JSON.stringify(j.error)}`;
+        const item = j.data?.[0] || {};
+        if (item.b64_json) {           // GPT Image → base64 → on héberge
+          try { return `Image générée (hébergée, URL stable) : ${saveGeneratedImage(item.b64_json)}`; }
+          catch (e) { return `Image générée mais échec de l'hébergement : ${e.message}`; }
+        }
+        if (item.url) return `Image générée : ${item.url}`;  // compat anciens modèles
+        return trunc(r.text);
       }
     }];
   }

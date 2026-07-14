@@ -49,6 +49,11 @@ fastify.register(require('@fastify/cookie'), { secret: SESSION_SECRET });
 fastify.register(require('@fastify/websocket'));
 fastify.register(require('@fastify/static'), { root: path.join(__dirname, '..', 'public'), prefix: '/' });
 
+/* Images générées par les agents (hébergées dans le volume data/, URL stable et publique) */
+const GENERATED_DIR = path.join(DATA_DIR, 'generated');
+try { fs.mkdirSync(GENERATED_DIR, { recursive: true }); } catch {}
+fastify.register(require('@fastify/static'), { root: GENERATED_DIR, prefix: '/generated/', decorateReply: false });
+
 /* ---------- Sessions ---------- */
 const COOKIE = 'lusine_sess';
 function isAuthed(req) {
@@ -107,7 +112,7 @@ fastify.addHook('onRequest', async (req, reply) => {
 /* ---------- Bootstrap & Auth ---------- */
 fastify.get('/api/bootstrap', async (req) => {
   const hasUser = !!db.prepare('SELECT id FROM users LIMIT 1').get();
-  return { needsSetup: !hasUser, authed: isAuthed(req), version: '2.1.0' };
+  return { needsSetup: !hasUser, authed: isAuthed(req), version: '2.2.0' };
 });
 
 fastify.post('/api/auth/setup', async (req, reply) => {
