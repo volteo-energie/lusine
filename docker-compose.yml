@@ -1,0 +1,11 @@
+services:
+  lusine:
+    build: .
+    container_name: lusine
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3200}:3200"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
