@@ -107,7 +107,7 @@ fastify.addHook('onRequest', async (req, reply) => {
 /* ---------- Bootstrap & Auth ---------- */
 fastify.get('/api/bootstrap', async (req) => {
   const hasUser = !!db.prepare('SELECT id FROM users LIMIT 1').get();
-  return { needsSetup: !hasUser, authed: isAuthed(req), version: '2.0.0' };
+  return { needsSetup: !hasUser, authed: isAuthed(req), version: '2.1.0' };
 });
 
 fastify.post('/api/auth/setup', async (req, reply) => {

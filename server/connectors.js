@@ -111,7 +111,7 @@ register({
     try { extra = data.headers ? JSON.parse(data.headers) : {}; } catch { extra = {}; }
     return [{
       name: 'http_request',
-      description: `Effectue une requête HTTP.${data.baseUrl ? ` URL de base pré-configurée : ${data.baseUrl} (les chemins relatifs s'y ajoutent).` : ''} Les headers d'authentification du credential sont injectés automatiquement.`,
+      description: `Effectue une requête HTTP.${data.baseUrl ? ` URL de base pré-configurée : ${data.baseUrl} (les chemins relatifs s'y ajoutent).` : ''} Les headers d'authentification du credential sont injectés automatiquement. Pour une API lente (scraping, run synchrone), augmente timeoutMs (jusqu'à 240000 = 4 min).`,
       parameters: {
         type: 'object',
         properties: {
@@ -119,7 +119,8 @@ register({
           url: { type: 'string', description: 'URL absolue, ou chemin relatif si une URL de base est configurée' },
           headers: { type: 'object', description: 'Headers additionnels' },
           query: { type: 'object' },
-          body: { description: 'Corps (objet JSON ou chaîne)' }
+          body: { description: 'Corps (objet JSON ou chaîne)' },
+          timeoutMs: { type: 'number', description: 'Délai max en ms (défaut 120000, max 240000). Augmente-le pour les APIs de scraping.' }
         },
         required: ['method', 'url']
       },
@@ -128,7 +129,8 @@ register({
         const url = buildUrl(data.baseUrl || '', args.url, args.query);
         const body = args.body === undefined || args.method === 'GET' ? undefined
           : (typeof args.body === 'string' ? args.body : JSON.stringify(args.body));
-        const r = await doFetch(url, { method: args.method, headers, body });
+        const timeout = Math.min(Number(args.timeoutMs) || 120000, 240000);
+        const r = await doFetch(url, { method: args.method, headers, body }, timeout);
         return trunc(`HTTP ${r.status}\n${r.text}`);
       }
     }];
