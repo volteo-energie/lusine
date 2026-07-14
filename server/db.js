@@ -12,7 +12,9 @@ db.pragma('journal_mode = WAL');
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  email TEXT,
   password_hash TEXT NOT NULL,
+  active INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS providers (
@@ -66,5 +68,32 @@ CREATE INDEX IF NOT EXISTS idx_trig_wf ON triggers(workflow_id);
 
 /* Marque la source d'une exécution (manual | cron | webhook) — migration additive */
 try { db.exec("ALTER TABLE executions ADD COLUMN source TEXT DEFAULT 'manual'"); } catch (_) {}
+
+/* ---------- Migration multi-utilisateur (v3) ---------- */
+// Colonnes additives (idempotentes)
+try { db.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch (_) {}
+try { db.exec("ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 1"); } catch (_) {}
+for (const table of ['providers', 'credentials', 'workflows', 'executions', 'triggers']) {
+  try { db.exec(`ALTER TABLE ${table} ADD COLUMN user_id TEXT`); } catch (_) {}
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL');
+db.exec('CREATE INDEX IF NOT EXISTS idx_prov_user ON providers(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_cred_user ON credentials(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_wf_user ON workflows(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_exec_user ON executions(user_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_trig_user ON triggers(user_id)');
+
+// Rattache l'utilisateur historique (mono-tenant) et toutes ses données à son compte
+const legacyUser = db.prepare('SELECT id, email FROM users ORDER BY created_at LIMIT 1').get();
+if (legacyUser) {
+  if (!legacyUser.email) {
+    const adminEmail = process.env.LUSINE_ADMIN_EMAIL || 'admin@lusineai.fr';
+    try { db.prepare('UPDATE users SET email = ? WHERE id = ?').run(adminEmail, legacyUser.id); } catch (_) {}
+  }
+  // toutes les lignes orphelines (créées avant le multi-tenant) appartiennent à l'admin
+  for (const table of ['providers', 'credentials', 'workflows', 'executions', 'triggers']) {
+    db.prepare(`UPDATE ${table} SET user_id = ? WHERE user_id IS NULL`).run(legacyUser.id);
+  }
+}
 
 module.exports = { db, DATA_DIR };

@@ -56,13 +56,16 @@ fastify.register(require('@fastify/static'), { root: GENERATED_DIR, prefix: '/ge
 
 /* ---------- Sessions ---------- */
 const COOKIE = 'lusine_sess';
-function isAuthed(req) {
+function currentUserId(req) {
   const raw = req.cookies?.[COOKIE];
-  if (!raw) return false;
+  if (!raw) return null;
   const { valid, value } = req.unsignCookie(raw);
-  if (!valid) return false;
-  return !!db.prepare('SELECT id FROM users WHERE id = ?').get(value);
+  if (!valid) return null;
+  const u = db.prepare('SELECT id, active FROM users WHERE id = ?').get(value);
+  if (!u || !u.active) return null;
+  return u.id;
 }
+function isAuthed(req) { return !!currentUserId(req); }
 function setSession(reply, userId) {
   reply.setCookie(COOKIE, userId, {
     signed: true, httpOnly: true, sameSite: 'lax', path: '/',
@@ -100,7 +103,7 @@ fastify.register(async (app) => {
 });
 
 /* ---------- Garde d'authentification ---------- */
-const PUBLIC_API = new Set(['/api/bootstrap', '/api/auth/login', '/api/auth/setup']);
+const PUBLIC_API = new Set(['/api/bootstrap', '/api/auth/login', '/api/auth/register']);
 fastify.addHook('onRequest', async (req, reply) => {
   if (!req.url.startsWith('/api/')) return;
   const urlPath = req.url.split('?')[0];
@@ -110,18 +113,37 @@ fastify.addHook('onRequest', async (req, reply) => {
 });
 
 /* ---------- Bootstrap & Auth ---------- */
+const SIGNUP_CODE = process.env.LUSINE_SIGNUP_CODE || '';
+function validEmail(e) { return typeof e === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e); }
+
 fastify.get('/api/bootstrap', async (req) => {
   const hasUser = !!db.prepare('SELECT id FROM users LIMIT 1').get();
-  return { needsSetup: !hasUser, authed: isAuthed(req), version: '2.3.0' };
+  const uid = currentUserId(req);
+  let email = null;
+  if (uid) email = db.prepare('SELECT email FROM users WHERE id = ?').get(uid)?.email || null;
+  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.0.0' };
 });
 
-fastify.post('/api/auth/setup', async (req, reply) => {
-  const hasUser = !!db.prepare('SELECT id FROM users LIMIT 1').get();
-  if (hasUser) return reply.code(400).send({ error: 'Déjà configuré' });
-  const { password } = req.body || {};
+fastify.post('/api/auth/register', async (req, reply) => {
+  const ip = req.ip;
+  if (!loginAllowed(ip)) return reply.code(429).send({ error: 'Trop de tentatives, réessaie dans 10 minutes' });
+  const { email, password, code } = req.body || {};
+  const firstAccount = !db.prepare('SELECT id FROM users LIMIT 1').get();
+
+  // Le tout premier compte (admin) ne demande pas de code. Ensuite, si un code est configuré, il est requis.
+  if (!firstAccount && SIGNUP_CODE && code !== SIGNUP_CODE) {
+    loginFail(ip);
+    return reply.code(403).send({ error: 'Code d\'inscription invalide' });
+  }
+  if (!validEmail(email)) return reply.code(400).send({ error: 'Adresse email invalide' });
   if (!password || password.length < 8) return reply.code(400).send({ error: 'Mot de passe trop court (8 caractères minimum)' });
+  const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase());
+  if (exists) return reply.code(409).send({ error: 'Un compte existe déjà avec cet email' });
+
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO users (id, password_hash) VALUES (?, ?)').run(id, hashPassword(password));
+  db.prepare('INSERT INTO users (id, email, password_hash, active) VALUES (?, ?, ?, 1)')
+    .run(id, email.toLowerCase(), hashPassword(password));
+  attempts.delete(ip);
   setSession(reply, id);
   return { ok: true };
 });
@@ -129,12 +151,13 @@ fastify.post('/api/auth/setup', async (req, reply) => {
 fastify.post('/api/auth/login', async (req, reply) => {
   const ip = req.ip;
   if (!loginAllowed(ip)) return reply.code(429).send({ error: 'Trop de tentatives, réessaie dans 10 minutes' });
-  const { password } = req.body || {};
-  const user = db.prepare('SELECT * FROM users LIMIT 1').get();
+  const { email, password } = req.body || {};
+  const user = email ? db.prepare('SELECT * FROM users WHERE email = ?').get(String(email).toLowerCase()) : null;
   if (!user || !verifyPassword(password || '', user.password_hash)) {
     loginFail(ip);
-    return reply.code(401).send({ error: 'Mot de passe incorrect' });
+    return reply.code(401).send({ error: 'Email ou mot de passe incorrect' });
   }
+  if (!user.active) return reply.code(403).send({ error: 'Ce compte est désactivé' });
   attempts.delete(ip);
   setSession(reply, user.id);
   return { ok: true };
@@ -146,8 +169,9 @@ fastify.post('/api/auth/logout', async (req, reply) => {
 });
 
 fastify.post('/api/auth/password', async (req, reply) => {
+  const uid = currentUserId(req);
   const { current, next } = req.body || {};
-  const user = db.prepare('SELECT * FROM users LIMIT 1').get();
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
   if (!verifyPassword(current || '', user.password_hash)) return reply.code(401).send({ error: 'Mot de passe actuel incorrect' });
   if (!next || next.length < 8) return reply.code(400).send({ error: 'Nouveau mot de passe trop court (8 caractères minimum)' });
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(next), user.id);
@@ -157,24 +181,27 @@ fastify.post('/api/auth/password', async (req, reply) => {
 /* ---------- Fournisseurs IA ---------- */
 function maskKey(k) { return k.length > 8 ? '••••••••' + k.slice(-4) : '••••••••'; }
 
-fastify.get('/api/providers', async () => {
-  return db.prepare('SELECT * FROM providers ORDER BY created_at').all().map(p => ({
+fastify.get('/api/providers', async (req) => {
+  const uid = currentUserId(req);
+  return db.prepare('SELECT * FROM providers WHERE user_id = ? ORDER BY created_at').all(uid).map(p => ({
     id: p.id, name: p.name, type: p.type, base_url: p.base_url,
     default_model: p.default_model, key_masked: maskKey(decrypt(p.api_key_enc))
   }));
 });
 
 fastify.post('/api/providers', async (req, reply) => {
+  const uid = currentUserId(req);
   const { name, type, base_url, api_key, default_model } = req.body || {};
   if (!name || !type || !api_key) return reply.code(400).send({ error: 'Nom, type et clé API requis' });
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO providers (id, name, type, base_url, api_key_enc, default_model) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(id, name, type, base_url || null, encrypt(api_key), default_model || null);
+  db.prepare('INSERT INTO providers (id, name, type, base_url, api_key_enc, default_model, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, type, base_url || null, encrypt(api_key), default_model || null, uid);
   return { id };
 });
 
 fastify.put('/api/providers/:id', async (req, reply) => {
-  const p = db.prepare('SELECT * FROM providers WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const p = db.prepare('SELECT * FROM providers WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!p) return reply.code(404).send({ error: 'Introuvable' });
   const { name, type, base_url, api_key, default_model } = req.body || {};
   db.prepare('UPDATE providers SET name = ?, type = ?, base_url = ?, api_key_enc = ?, default_model = ? WHERE id = ?')
@@ -184,17 +211,19 @@ fastify.put('/api/providers/:id', async (req, reply) => {
 });
 
 fastify.delete('/api/providers/:id', async (req) => {
-  db.prepare('DELETE FROM providers WHERE id = ?').run(req.params.id);
+  const uid = currentUserId(req);
+  db.prepare('DELETE FROM providers WHERE id = ? AND user_id = ?').run(req.params.id, uid);
   return { ok: true };
 });
 
 fastify.post('/api/providers/test', async (req, reply) => {
+  const uid = currentUserId(req);
   const { id, type, base_url, api_key, model } = req.body || {};
   try {
     let provider;
     if (api_key) provider = { type, base_url, apiKey: api_key };
     else {
-      const p = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+      const p = db.prepare('SELECT * FROM providers WHERE id = ? AND user_id = ?').get(id, uid);
       if (!p) return reply.code(404).send({ error: 'Fournisseur introuvable' });
       provider = { type: p.type, base_url: p.base_url, apiKey: decrypt(p.api_key_enc) };
       if (!model && p.default_model) req.body.model = p.default_model;
@@ -214,21 +243,24 @@ fastify.post('/api/providers/test', async (req, reply) => {
 /* ---------- Connecteurs & credentials ---------- */
 fastify.get('/api/connectors/types', async () => listTypes());
 
-fastify.get('/api/credentials', async () => {
-  return db.prepare('SELECT id, name, type, created_at FROM credentials ORDER BY created_at DESC').all();
+fastify.get('/api/credentials', async (req) => {
+  const uid = currentUserId(req);
+  return db.prepare('SELECT id, name, type, created_at FROM credentials WHERE user_id = ? ORDER BY created_at DESC').all(uid);
 });
 
 fastify.post('/api/credentials', async (req, reply) => {
+  const uid = currentUserId(req);
   const { name, type, data } = req.body || {};
   if (!name || !type || !data) return reply.code(400).send({ error: 'Nom, type et données requis' });
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO credentials (id, name, type, data_enc) VALUES (?, ?, ?, ?)')
-    .run(id, name, type, encrypt(JSON.stringify(data)));
+  db.prepare('INSERT INTO credentials (id, name, type, data_enc, user_id) VALUES (?, ?, ?, ?, ?)')
+    .run(id, name, type, encrypt(JSON.stringify(data)), uid);
   return { id };
 });
 
 fastify.put('/api/credentials/:id', async (req, reply) => {
-  const c = db.prepare('SELECT * FROM credentials WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const c = db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!c) return reply.code(404).send({ error: 'Introuvable' });
   const { name, data } = req.body || {};
   let merged = JSON.parse(decrypt(c.data_enc));
@@ -243,30 +275,35 @@ fastify.put('/api/credentials/:id', async (req, reply) => {
 });
 
 fastify.delete('/api/credentials/:id', async (req) => {
-  db.prepare('DELETE FROM credentials WHERE id = ?').run(req.params.id);
+  const uid = currentUserId(req);
+  db.prepare('DELETE FROM credentials WHERE id = ? AND user_id = ?').run(req.params.id, uid);
   return { ok: true };
 });
 
 /* ---------- Workflows ---------- */
-fastify.get('/api/workflows', async () => {
-  return db.prepare('SELECT id, name, active, created_at, updated_at FROM workflows ORDER BY updated_at DESC').all();
+fastify.get('/api/workflows', async (req) => {
+  const uid = currentUserId(req);
+  return db.prepare('SELECT id, name, active, created_at, updated_at FROM workflows WHERE user_id = ? ORDER BY updated_at DESC').all(uid);
 });
 
 fastify.post('/api/workflows', async (req) => {
+  const uid = currentUserId(req);
   const id = crypto.randomUUID();
   const name = (req.body?.name || 'Nouveau workflow').trim();
-  db.prepare('INSERT INTO workflows (id, name) VALUES (?, ?)').run(id, name);
+  db.prepare('INSERT INTO workflows (id, name, user_id) VALUES (?, ?, ?)').run(id, name, uid);
   return { id, name };
 });
 
 fastify.get('/api/workflows/:id', async (req, reply) => {
-  const wf = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const wf = db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!wf) return reply.code(404).send({ error: 'Introuvable' });
   return { ...wf, data: JSON.parse(wf.data) };
 });
 
 fastify.put('/api/workflows/:id', async (req, reply) => {
-  const wf = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const wf = db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!wf) return reply.code(404).send({ error: 'Introuvable' });
   const { name, data, active } = req.body || {};
   db.prepare(`UPDATE workflows SET name = ?, data = ?, active = ?, updated_at = datetime('now') WHERE id = ?`)
@@ -275,23 +312,30 @@ fastify.put('/api/workflows/:id', async (req, reply) => {
 });
 
 fastify.post('/api/workflows/:id/duplicate', async (req, reply) => {
-  const wf = db.prepare('SELECT * FROM workflows WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const wf = db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!wf) return reply.code(404).send({ error: 'Introuvable' });
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO workflows (id, name, data) VALUES (?, ?, ?)').run(id, wf.name + ' (copie)', wf.data);
+  db.prepare('INSERT INTO workflows (id, name, data, user_id) VALUES (?, ?, ?, ?)').run(id, wf.name + ' (copie)', wf.data, uid);
   return { id };
 });
 
 fastify.delete('/api/workflows/:id', async (req) => {
+  const uid = currentUserId(req);
+  const wf = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
+  if (!wf) return { ok: true };
   db.prepare('DELETE FROM workflows WHERE id = ?').run(req.params.id);
   db.prepare('DELETE FROM executions WHERE workflow_id = ?').run(req.params.id);
+  db.prepare('DELETE FROM triggers WHERE workflow_id = ?').run(req.params.id);
+  syncTriggers();
   return { ok: true };
 });
 
 /* ---------- Exécutions ---------- */
 fastify.post('/api/workflows/:id/run', async (req, reply) => {
+  const uid = currentUserId(req);
   try {
-    const execId = await runWorkflow({ workflowId: req.params.id, input: req.body?.input || '', broadcast, source: 'manual' });
+    const execId = await runWorkflow({ workflowId: req.params.id, input: req.body?.input || '', broadcast, source: 'manual', userId: uid });
     return { execId };
   } catch (e) {
     return reply.code(400).send({ error: e.message });
@@ -299,31 +343,37 @@ fastify.post('/api/workflows/:id/run', async (req, reply) => {
 });
 
 fastify.get('/api/executions', async (req) => {
+  const uid = currentUserId(req);
   const { workflowId } = req.query || {};
   const rows = workflowId
-    ? db.prepare('SELECT id, workflow_id, status, source, started_at, finished_at FROM executions WHERE workflow_id = ? ORDER BY started_at DESC LIMIT 50').all(workflowId)
+    ? db.prepare('SELECT id, workflow_id, status, source, started_at, finished_at FROM executions WHERE workflow_id = ? AND user_id = ? ORDER BY started_at DESC LIMIT 50').all(workflowId, uid)
     : db.prepare(`SELECT e.id, e.workflow_id, e.status, e.source, e.started_at, e.finished_at, w.name as workflow_name
                   FROM executions e LEFT JOIN workflows w ON w.id = e.workflow_id
-                  ORDER BY e.started_at DESC LIMIT 100`).all();
+                  WHERE e.user_id = ? ORDER BY e.started_at DESC LIMIT 100`).all(uid);
   return rows;
 });
 
 fastify.get('/api/executions/:id', async (req, reply) => {
-  const e = db.prepare('SELECT * FROM executions WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const e = db.prepare('SELECT * FROM executions WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!e) return reply.code(404).send({ error: 'Introuvable' });
   return { ...e, logs: JSON.parse(e.logs || '[]') };
 });
 
 fastify.post('/api/executions/:id/stop', async (req) => {
+  const uid = currentUserId(req);
+  const e = db.prepare('SELECT id FROM executions WHERE id = ? AND user_id = ?').get(req.params.id, uid);
+  if (!e) return { ok: false };
   return { ok: stopExecution(req.params.id) };
 });
 
 /* ---------- Test d'un agent seul ---------- */
 fastify.post('/api/agents/test', async (req, reply) => {
+  const uid = currentUserId(req);
   const { node, input } = req.body || {};
   if (!node) return reply.code(400).send({ error: 'Agent manquant' });
   try {
-    const r = await testAgent({ node, input: input || '' });
+    const r = await testAgent({ node, input: input || '', userId: uid });
     return r;
   } catch (e) {
     return reply.code(400).send({ error: e.message });
@@ -341,12 +391,16 @@ function triggerOut(t) {
   };
 }
 
-fastify.get('/api/workflows/:id/triggers', async (req) => {
-  return db.prepare('SELECT * FROM triggers WHERE workflow_id = ? ORDER BY created_at').all(req.params.id).map(triggerOut);
+fastify.get('/api/workflows/:id/triggers', async (req, reply) => {
+  const uid = currentUserId(req);
+  const wf = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
+  if (!wf) return reply.code(404).send({ error: 'Workflow introuvable' });
+  return db.prepare('SELECT * FROM triggers WHERE workflow_id = ? AND user_id = ? ORDER BY created_at').all(req.params.id, uid).map(triggerOut);
 });
 
 fastify.post('/api/workflows/:id/triggers', async (req, reply) => {
-  const wf = db.prepare('SELECT id FROM workflows WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const wf = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!wf) return reply.code(404).send({ error: 'Workflow introuvable' });
   const { type, name, config } = req.body || {};
   if (type !== 'cron' && type !== 'webhook') return reply.code(400).send({ error: 'Type de déclencheur invalide' });
@@ -359,14 +413,15 @@ fastify.post('/api/workflows/:id/triggers', async (req, reply) => {
   }
   const id = crypto.randomUUID();
   const secret = type === 'webhook' ? crypto.randomBytes(18).toString('hex') : null;
-  db.prepare('INSERT INTO triggers (id, workflow_id, type, name, config, secret, enabled) VALUES (?, ?, ?, ?, ?, ?, 1)')
-    .run(id, req.params.id, type, name || (type === 'cron' ? 'Déclencheur cron' : 'Webhook'), JSON.stringify(cfg), secret);
+  db.prepare('INSERT INTO triggers (id, workflow_id, type, name, config, secret, enabled, user_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?)')
+    .run(id, req.params.id, type, name || (type === 'cron' ? 'Déclencheur cron' : 'Webhook'), JSON.stringify(cfg), secret, uid);
   syncTriggers();
   return triggerOut(db.prepare('SELECT * FROM triggers WHERE id = ?').get(id));
 });
 
 fastify.put('/api/triggers/:id', async (req, reply) => {
-  const t = db.prepare('SELECT * FROM triggers WHERE id = ?').get(req.params.id);
+  const uid = currentUserId(req);
+  const t = db.prepare('SELECT * FROM triggers WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!t) return reply.code(404).send({ error: 'Introuvable' });
   const { name, config, enabled } = req.body || {};
   let cfg = config;
@@ -380,13 +435,17 @@ fastify.put('/api/triggers/:id', async (req, reply) => {
 });
 
 fastify.delete('/api/triggers/:id', async (req) => {
-  db.prepare('DELETE FROM triggers WHERE id = ?').run(req.params.id);
+  const uid = currentUserId(req);
+  db.prepare('DELETE FROM triggers WHERE id = ? AND user_id = ?').run(req.params.id, uid);
   syncTriggers();
   return { ok: true };
 });
 
 /* Déclenchement manuel d'un trigger (bouton « Tester » de l'UI) */
 fastify.post('/api/triggers/:id/fire', async (req, reply) => {
+  const uid = currentUserId(req);
+  const t = db.prepare('SELECT id FROM triggers WHERE id = ? AND user_id = ?').get(req.params.id, uid);
+  if (!t) return reply.code(404).send({ error: 'Introuvable' });
   try {
     const execId = await fireTrigger(req.params.id, { source: 'manual' });
     return { execId };

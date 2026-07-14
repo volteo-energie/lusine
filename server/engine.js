@@ -66,8 +66,10 @@ async function callOpenAI({ baseUrl, apiKey, model, system, messages, tools, tem
   };
 }
 
-function getProvider(providerId) {
-  const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(providerId);
+function getProvider(providerId, userId) {
+  const row = userId
+    ? db.prepare('SELECT * FROM providers WHERE id = ? AND user_id = ?').get(providerId, userId)
+    : db.prepare('SELECT * FROM providers WHERE id = ?').get(providerId);
   if (!row) return null;
   return { ...row, apiKey: decrypt(row.api_key_enc) };
 }
@@ -81,15 +83,17 @@ async function callLLM(provider, opts) {
 /* Outils d'un agent à partir de ses credentials                       */
 /* ------------------------------------------------------------------ */
 
-function buildAgentTools(credentialIds = []) {
+function buildAgentTools(credentialIds = [], userId) {
   const tools = [];
   const seen = new Set();
   for (const cid of credentialIds) {
-    const row = db.prepare('SELECT * FROM credentials WHERE id = ?').get(cid);
+    const row = userId
+      ? db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?').get(cid, userId)
+      : db.prepare('SELECT * FROM credentials WHERE id = ?').get(cid);
     if (!row) continue;
     let data = {};
     try { data = JSON.parse(decrypt(row.data_enc)); } catch { continue; }
-    for (const tool of buildToolsForCredential(row.type, data)) {
+    for (const tool of buildToolsForCredential(row.type, data, { userId })) {
       let name = tool.name, i = 2;
       while (seen.has(name)) name = `${tool.name}_${i++}`;
       seen.add(name);
@@ -103,15 +107,15 @@ function buildAgentTools(credentialIds = []) {
 /* Boucle agentique                                                    */
 /* ------------------------------------------------------------------ */
 
-async function runAgent({ node, input, onStep, shouldStop }) {
+async function runAgent({ node, input, onStep, shouldStop, userId }) {
   const cfg = node.config || {};
   if (!cfg.providerId) throw new Error(`Aucun fournisseur IA configuré pour l'agent « ${node.name} ». Ouvre l'agent et choisis un fournisseur.`);
-  const provider = getProvider(cfg.providerId);
+  const provider = getProvider(cfg.providerId, userId);
   if (!provider) throw new Error(`Le fournisseur IA de l'agent « ${node.name} » n'existe plus.`);
   const model = cfg.model || provider.default_model;
   if (!model) throw new Error(`Aucun modèle défini pour l'agent « ${node.name} » (ni sur l'agent, ni par défaut sur le fournisseur).`);
 
-  const tools = buildAgentTools(cfg.credentialIds || []);
+  const tools = buildAgentTools(cfg.credentialIds || [], userId);
   const system = [
     `Tu es « ${node.name} », un agent autonome au sein d'une chaîne de travail nommée L'usine.`,
     `TA MISSION :\n${cfg.mission || '(aucune mission définie)'}`,
@@ -180,17 +184,20 @@ function topoSort(nodes, connections) {
   return order;
 }
 
-async function runWorkflow({ workflowId, input, broadcast, source }) {
-  const wf = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId);
+async function runWorkflow({ workflowId, input, broadcast, source, userId }) {
+  const wf = userId
+    ? db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(workflowId, userId)
+    : db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId);
   if (!wf) throw new Error('Workflow introuvable');
+  const ownerId = wf.user_id || userId;
   const data = JSON.parse(wf.data);
   const nodes = data.nodes || [];
   const connections = data.connections || [];
   if (!nodes.length) throw new Error('Le workflow ne contient aucun agent.');
 
   const execId = crypto.randomUUID();
-  db.prepare('INSERT INTO executions (id, workflow_id, status, input, source) VALUES (?, ?, ?, ?, ?)')
-    .run(execId, workflowId, 'running', input || '', source || 'manual');
+  db.prepare('INSERT INTO executions (id, workflow_id, status, input, source, user_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(execId, workflowId, 'running', input || '', source || 'manual', ownerId);
   running.set(execId, { stop: false });
 
   const logs = [];
@@ -225,6 +232,7 @@ async function runWorkflow({ workflowId, input, broadcast, source }) {
           const output = await runAgent({
             node,
             input: nodeInput,
+            userId: ownerId,
             shouldStop: () => running.get(execId)?.stop,
             onStep: (step) => {
               log.steps.push(step);
@@ -277,10 +285,10 @@ function stopExecution(execId) {
 }
 
 /* Test d'un agent seul (depuis le panneau de config) */
-async function testAgent({ node, input }) {
+async function testAgent({ node, input, userId }) {
   const steps = [];
   const output = await runAgent({
-    node, input,
+    node, input, userId,
     shouldStop: () => false,
     onStep: (s) => steps.push(s)
   });

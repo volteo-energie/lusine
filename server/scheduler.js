@@ -29,7 +29,8 @@ async function fireTrigger(triggerId, { source = 'cron', inputOverride } = {}) {
     workflowId: trigger.workflow_id,
     input,
     broadcast: deps.broadcast,
-    source
+    source,
+    userId: trigger.user_id
   });
 
   db.prepare("UPDATE triggers SET last_fired_at = datetime('now'), last_exec_id = ? WHERE id = ?")

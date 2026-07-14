@@ -103,8 +103,7 @@ async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
 
   if (!S.boot) S.boot = await API.get('/api/bootstrap');
-  if (S.boot.needsSetup) return renderSetup();
-  if (!S.boot.authed) return renderLogin();
+  if (!S.boot.authed) return renderAuth(S.boot.needsSetup ? 'register' : 'login');
 
   WS.connect();
 
@@ -120,52 +119,50 @@ window.addEventListener('hashchange', route);
 /* ================================================================
    AUTH
    ================================================================ */
-function renderSetup() {
+function renderAuth(mode) {
+  const first = S.boot?.needsSetup;
+  const isReg = mode === 'register';
+  const showCode = isReg && !first && S.boot?.signupGated;
   $('#app').innerHTML = `
     <div class="auth-wrap"><div class="auth-card">
       <div class="auth-logo">🏭</div>
-      <div class="auth-title">Bienvenue dans L'usine</div>
-      <div class="auth-sub">Ton orchestrateur d'agents IA autonomes.<br>Choisis un mot de passe pour protéger l'accès.</div>
-      <div class="field"><label>Mot de passe (8 caractères min.)</label>
-        <input type="password" class="input" id="pw1" autofocus></div>
-      <div class="field"><label>Confirme le mot de passe</label>
-        <input type="password" class="input" id="pw2"></div>
+      <div class="auth-title">${first ? 'Bienvenue dans L\'usine' : 'L\'usine'}</div>
+      <div class="auth-sub">${first
+        ? 'Crée le compte administrateur pour démarrer ta plateforme.'
+        : isReg ? 'Crée ton compte pour accéder à ta fabrique d\'agents IA.' : 'Connecte-toi à ta fabrique d\'agents IA.'}</div>
+      <div class="field"><label>Email</label>
+        <input type="email" class="input" id="email" autofocus autocomplete="username"></div>
+      <div class="field"><label>Mot de passe${isReg ? ' (8 caractères min.)' : ''}</label>
+        <input type="password" class="input" id="pw" autocomplete="${isReg ? 'new-password' : 'current-password'}"></div>
+      ${isReg ? `<div class="field"><label>Confirme le mot de passe</label>
+        <input type="password" class="input" id="pw2" autocomplete="new-password"></div>` : ''}
+      ${showCode ? `<div class="field"><label>Code d'inscription</label>
+        <input type="text" class="input" id="code" placeholder="Fourni par l'administrateur"></div>` : ''}
       <div class="auth-err" id="err"></div>
-      <button class="btn btn-primary" id="go">Créer et entrer dans L'usine</button>
+      <button class="btn btn-primary" id="go">${isReg ? (first ? 'Créer et entrer' : 'Créer mon compte') : 'Se connecter'}</button>
+      ${first ? '' : `<div class="auth-switch">
+        ${isReg ? 'Déjà un compte ?' : 'Pas encore de compte ?'}
+        <a id="switch">${isReg ? 'Se connecter' : 'Créer un compte'}</a>
+      </div>`}
     </div></div>`;
+
   const submit = async () => {
-    const p1 = $('#pw1').value, p2 = $('#pw2').value;
-    if (p1 !== p2) return $('#err').textContent = 'Les mots de passe ne correspondent pas.';
+    const email = $('#email').value.trim();
+    const pw = $('#pw').value;
     try {
-      await API.post('/api/auth/setup', { password: p1 });
+      if (isReg) {
+        if (pw !== $('#pw2').value) return $('#err').textContent = 'Les mots de passe ne correspondent pas.';
+        await API.post('/api/auth/register', { email, password: pw, code: showCode ? $('#code').value.trim() : undefined });
+      } else {
+        await API.post('/api/auth/login', { email, password: pw });
+      }
       S.boot = null;
       location.hash = '#/';
       route();
     } catch (e) { $('#err').textContent = e.message; }
   };
   $('#go').addEventListener('click', submit);
-  $('#app').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-}
-
-function renderLogin() {
-  $('#app').innerHTML = `
-    <div class="auth-wrap"><div class="auth-card">
-      <div class="auth-logo">🏭</div>
-      <div class="auth-title">L'usine</div>
-      <div class="auth-sub">Orchestrateur d'agents IA autonomes</div>
-      <div class="field"><label>Mot de passe</label>
-        <input type="password" class="input" id="pw" autofocus></div>
-      <div class="auth-err" id="err"></div>
-      <button class="btn btn-primary" id="go">Se connecter</button>
-    </div></div>`;
-  const submit = async () => {
-    try {
-      await API.post('/api/auth/login', { password: $('#pw').value });
-      S.boot = null;
-      route();
-    } catch (e) { $('#err').textContent = e.message; }
-  };
-  $('#go').addEventListener('click', submit);
+  $('#switch')?.addEventListener('click', () => renderAuth(isReg ? 'login' : 'register'));
   $('#app').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 }
 
@@ -184,6 +181,7 @@ function renderShell(active, content) {
           <a class="nav-item ${active === 'providers' ? 'active' : ''}" href="#/providers"><span class="nav-ico">🧠</span><span>Fournisseurs IA</span></a>
         </nav>
         <div class="sidebar-foot">
+          ${S.boot?.email ? `<div class="sidebar-user" title="${esc(S.boot.email)}">${esc(S.boot.email)}</div>` : ''}
           <button class="btn btn-ghost" id="logout" style="width:100%"><span class="nav-ico">↩</span><span>Déconnexion</span></button>
         </div>
       </aside>

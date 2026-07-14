@@ -23,11 +23,15 @@ function publicBase() {
 }
 
 // Enregistre une image (base64) sur le serveur et renvoie son URL publique stable.
-function saveGeneratedImage(b64, ext = 'png') {
+function saveGeneratedImage(b64, ext = 'png', userId) {
+  const sub = userId ? String(userId).replace(/[^a-zA-Z0-9-]/g, '') : 'shared';
+  const dir = path.join(GENERATED_DIR, sub);
+  fs.mkdirSync(dir, { recursive: true });
   const file = `${Date.now().toString(36)}-${crypto.randomBytes(5).toString('hex')}.${ext}`;
-  fs.writeFileSync(path.join(GENERATED_DIR, file), Buffer.from(b64, 'base64'));
+  fs.writeFileSync(path.join(dir, file), Buffer.from(b64, 'base64'));
   const base = publicBase();
-  return base ? `${base}/generated/${file}` : `/generated/${file}`;
+  const rel = `/generated/${sub}/${file}`;
+  return base ? `${base}${rel}` : rel;
 }
 
 function trunc(s, n = MAX_RESULT) {
@@ -454,8 +458,9 @@ register({
     { key: 'apiKey', label: 'Clé API OpenAI', type: 'password', required: true },
     { key: 'model', label: 'Modèle (optionnel)', placeholder: 'gpt-image-1 (défaut). Aussi : gpt-image-2' }
   ],
-  buildTools(data) {
+  buildTools(data, ctx) {
     const model = data.model || 'gpt-image-1';
+    const userId = ctx && ctx.userId;
     return [{
       name: 'generate_image',
       description: `Génère une image à partir d'un prompt (modèle ${model}) et retourne une URL stable hébergée sur le serveur.`,
@@ -481,7 +486,7 @@ register({
         if (j.error) return `ERREUR génération image : ${j.error.message || JSON.stringify(j.error)}`;
         const item = j.data?.[0] || {};
         if (item.b64_json) {           // GPT Image → base64 → on héberge
-          try { return `Image générée (hébergée, URL stable) : ${saveGeneratedImage(item.b64_json)}`; }
+          try { return `Image générée (hébergée, URL stable) : ${saveGeneratedImage(item.b64_json, 'png', userId)}`; }
           catch (e) { return `Image générée mais échec de l'hébergement : ${e.message}`; }
         }
         if (item.url) return `Image générée : ${item.url}`;  // compat anciens modèles
@@ -586,10 +591,10 @@ function listTypes() {
   }));
 }
 
-function buildToolsForCredential(type, data) {
+function buildToolsForCredential(type, data, ctx) {
   const t = TYPES[type];
   if (!t) return [];
-  return t.buildTools(data);
+  return t.buildTools(data, ctx);
 }
 
 module.exports = { TYPES, listTypes, buildToolsForCredential, trunc };
