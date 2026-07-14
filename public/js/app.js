@@ -560,13 +560,24 @@ async function renderExecutions() {
   $$('.wf-row').forEach(r => r.addEventListener('click', () => openExecDetail(r.dataset.id)));
 }
 
+function imageGallery(text) {
+  const raw = String(text ?? '');
+  const imgRe = /https?:\/\/[^\s)\]<>"']+?\.(?:png|jpe?g|webp|gif)|https?:\/\/[^\s)\]<>"']*\/generated\/[^\s)\]<>"']+|\/generated\/[^\s)\]<>"']+/gi;
+  const urls = [...new Set(raw.match(imgRe) || [])];
+  if (!urls.length) return '';
+  return `<div class="gen-gallery">${urls.map(u =>
+    `<a href="${esc(u)}" target="_blank" rel="noopener" title="Ouvrir en grand"><img class="gen-img" src="${esc(u)}" loading="lazy" alt="image générée"></a>`
+  ).join('')}</div>`;
+}
+
 function stepHtml(s) {
-  if (s.type === 'llm') return `<div class="step step-llm">💭 ${esc(s.text)}</div>`;
+  if (s.type === 'llm') return `<div class="step step-llm">💭 ${esc(s.text)}${imageGallery(s.text)}</div>`;
   if (s.type === 'tool:start') return '';
   if (s.type === 'tool:end') return `
     <details class="step step-tool">
       <summary>🔧 ${esc(s.name)}</summary>
       <pre>${esc(s.result)}</pre>
+      ${imageGallery(s.result)}
     </details>`;
   return '';
 }
@@ -584,7 +595,7 @@ async function openExecDetail(execId) {
       </summary>
       <div class="body">
         ${(l.steps || []).map(stepHtml).join('')}
-        ${l.output ? `<div class="step step-final">${esc(l.output)}</div>` : ''}
+        ${l.output ? `<div class="step step-final">${esc(l.output)}${imageGallery(l.output)}</div>` : ''}
         ${l.error ? `<div class="step step-error">${esc(l.error)}</div>` : ''}
       </div>
     </details>`).join('');
@@ -1246,7 +1257,7 @@ function openNDV(node, cv) {
     try {
       const r = await API.post('/api/agents/test', { node, input: $('#ndv-test-input', m.el).value });
       stepsEl.innerHTML = (r.steps || []).map(stepHtml).join('') +
-        `<div class="step step-final">${esc(r.output)}</div>`;
+        `<div class="step step-final">${esc(r.output)}${imageGallery(r.output)}</div>`;
     } catch (e) {
       stepsEl.innerHTML = `<div class="step step-error">${esc(e.message)}</div>`;
     }
