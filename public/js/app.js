@@ -16,6 +16,18 @@ const S = {
   editorCleanup: null
 };
 
+/* Logo « 3 cheminées molten » — même marque que le site vitrine lusineai.fr */
+const LOGO_MARK = `<svg class="logo-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+  <defs><linearGradient id="lg-mark" x1="0" y1="1" x2="1" y2="0">
+    <stop offset="0" stop-color="#ff6d5a"/><stop offset="1" stop-color="#ffa24b"/>
+  </linearGradient></defs>
+  <rect x="4" y="21" width="24" height="7" rx="2" fill="url(#lg-mark)"/>
+  <rect x="7.5" y="11" width="4.5" height="9" rx="1.4" fill="url(#lg-mark)" opacity=".95"/>
+  <rect x="13.75" y="6" width="4.5" height="14" rx="1.4" fill="url(#lg-mark)"/>
+  <rect x="20" y="14" width="4.5" height="6" rx="1.4" fill="url(#lg-mark)" opacity=".85"/>
+  <circle cx="16" cy="3.2" r="1.5" fill="#ffa24b"/>
+</svg>`;
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -125,7 +137,7 @@ function renderAuth(mode) {
   const showCode = isReg && !first && S.boot?.signupGated;
   $('#app').innerHTML = `
     <div class="auth-wrap"><div class="auth-card">
-      <div class="auth-logo">🏭</div>
+      <div class="auth-logo">${LOGO_MARK}</div>
       <div class="auth-title">${first ? 'Bienvenue dans L\'usine' : 'L\'usine'}</div>
       <div class="auth-sub">${first
         ? 'Crée le compte administrateur pour démarrer ta plateforme.'
@@ -173,16 +185,16 @@ function renderShell(active, content) {
   $('#app').innerHTML = `
     <div class="shell">
       <aside class="sidebar">
-        <div class="sidebar-logo"><span class="ico">🏭</span><span>L'usine</span></div>
+        <div class="sidebar-logo"><span class="ico">${LOGO_MARK}</span><span>L'usine</span></div>
         <nav>
-          <a class="nav-item ${active === 'home' ? 'active' : ''}" href="#/"><span class="nav-ico">⚡</span><span>Workflows</span></a>
-          <a class="nav-item ${active === 'credentials' ? 'active' : ''}" href="#/credentials"><span class="nav-ico">🔑</span><span>Identifiants</span></a>
-          <a class="nav-item ${active === 'executions' ? 'active' : ''}" href="#/executions"><span class="nav-ico">🕘</span><span>Exécutions</span></a>
-          <a class="nav-item ${active === 'providers' ? 'active' : ''}" href="#/providers"><span class="nav-ico">🧠</span><span>Fournisseurs IA</span></a>
+          <a class="nav-item ${active === 'home' ? 'active' : ''}" href="#/"><span class="nav-ico">${icon('zap')}</span><span>Workflows</span></a>
+          <a class="nav-item ${active === 'credentials' ? 'active' : ''}" href="#/credentials"><span class="nav-ico">${icon('key')}</span><span>Identifiants</span></a>
+          <a class="nav-item ${active === 'executions' ? 'active' : ''}" href="#/executions"><span class="nav-ico">${icon('history')}</span><span>Exécutions</span></a>
+          <a class="nav-item ${active === 'providers' ? 'active' : ''}" href="#/providers"><span class="nav-ico">${icon('sparkles')}</span><span>Fournisseurs IA</span></a>
         </nav>
         <div class="sidebar-foot">
           ${S.boot?.email ? `<div class="sidebar-user" title="${esc(S.boot.email)}">${esc(S.boot.email)}</div>` : ''}
-          <button class="btn btn-ghost" id="logout" style="width:100%"><span class="nav-ico">↩</span><span>Déconnexion</span></button>
+          <button class="btn btn-ghost" id="logout" style="width:100%"><span class="nav-ico">${icon('logout')}</span><span>Déconnexion</span></button>
         </div>
       </aside>
       <main class="main"><div class="page">${content}</div></main>
@@ -208,11 +220,11 @@ async function renderHome() {
       </div>
       <span class="badge ${w.active ? 'on' : ''}">${w.active ? 'Actif' : 'Inactif'}</span>
       <div class="menu-wrap">
-        <button class="btn btn-ghost btn-icon menu-btn">⋯</button>
+        <button class="btn btn-ghost btn-icon menu-btn">${icon('more')}</button>
         <div class="dropdown">
-          <button data-act="rename">✏️ Renommer</button>
-          <button data-act="dup">⧉ Dupliquer</button>
-          <button data-act="del" class="danger">🗑 Supprimer</button>
+          <button data-act="rename">${icon('pencil')} Renommer</button>
+          <button data-act="dup">${icon('copy')} Dupliquer</button>
+          <button data-act="del" class="danger">${icon('trash')} Supprimer</button>
         </div>
       </div>
     </div>`).join('');
@@ -220,13 +232,13 @@ async function renderHome() {
   renderShell('home', `
     <div class="page-head">
       <div><h1>Workflows</h1><div class="sub">Tes chaînes d'agents IA autonomes</div></div>
-      <button class="btn btn-primary" id="new-wf">＋ Créer un workflow</button>
+      <button class="btn btn-primary" id="new-wf">${icon('plus')} Créer un workflow</button>
     </div>
     ${wfs.length ? `<div class="wf-list">${rows}</div>` : `
       <div class="empty">
-        <div class="big">🏭</div>
+        <div class="big">${icon('factory')}</div>
         <p>Aucun workflow pour l'instant.<br>Crée ta première chaîne d'agents : chaque agent accomplit sa mission puis passe le relais au suivant.</p>
-        <button class="btn btn-primary" id="new-wf-2">＋ Créer mon premier workflow</button>
+        <button class="btn btn-primary" id="new-wf-2">${icon('plus')} Créer mon premier workflow</button>
       </div>`}
   `);
 
@@ -286,7 +298,7 @@ async function renderProviders() {
   const cards = S.providers.map(p => `
     <div class="card">
       <div class="card-head">
-        <div class="card-ico">🧠</div>
+        <div class="card-ico">${icon('sparkles')}</div>
         <div><div class="card-title">${esc(p.name)}</div>
         <div class="card-sub">${esc(PROVIDER_TYPES[p.type]?.label || p.type)} · ${esc(p.default_model || 'aucun modèle par défaut')}</div></div>
       </div>
@@ -301,12 +313,12 @@ async function renderProviders() {
   renderShell('providers', `
     <div class="page-head">
       <div><h1>Fournisseurs IA</h1><div class="sub">Les moteurs qui font tourner tes agents (multi-provider)</div></div>
-      <button class="btn btn-primary" id="add-p">＋ Ajouter un fournisseur</button>
+      <button class="btn btn-primary" id="add-p">${icon('plus')} Ajouter un fournisseur</button>
     </div>
     ${S.providers.length ? `<div class="cards">${cards}</div>` : `
-      <div class="empty"><div class="big">🧠</div>
+      <div class="empty"><div class="big">${icon('sparkles')}</div>
       <p>Aucun fournisseur IA configuré.<br>Ajoute au moins une clé API (Anthropic, OpenAI, ou tout service compatible OpenAI) pour donner un cerveau à tes agents.</p>
-      <button class="btn btn-primary" id="add-p-2">＋ Ajouter un fournisseur</button></div>`}
+      <button class="btn btn-primary" id="add-p-2">${icon('plus')} Ajouter un fournisseur</button></div>`}
   `);
 
   $('#add-p')?.addEventListener('click', () => openProviderModal());
@@ -334,7 +346,7 @@ function openProviderModal(existing) {
   const m = openModal(`
     <div class="modal">
       <div class="modal-head"><h3>${existing ? 'Modifier le fournisseur' : 'Nouveau fournisseur IA'}</h3>
-        <button class="btn btn-ghost btn-icon" data-close>✕</button></div>
+        <button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button></div>
       <div class="modal-body">
         <div class="field"><label>Nom</label>
           <input class="input" id="p-name" placeholder="Mon compte Claude" value="${esc(existing?.name || '')}"></div>
@@ -428,7 +440,7 @@ async function renderCredentials() {
     return `
     <div class="card">
       <div class="card-head">
-        <div class="card-ico">${t.icon}</div>
+        <div class="card-ico">${emojiIcon(t.icon)}</div>
         <div><div class="card-title">${esc(c.name)}</div>
         <div class="card-sub">${esc(t.name)} · créé le ${fmtDate(c.created_at)}</div></div>
       </div>
@@ -442,12 +454,12 @@ async function renderCredentials() {
   renderShell('credentials', `
     <div class="page-head">
       <div><h1>Identifiants</h1><div class="sub">Les accès (chiffrés AES-256) que tes agents utilisent comme outils</div></div>
-      <button class="btn btn-primary" id="add-c">＋ Ajouter un identifiant</button>
+      <button class="btn btn-primary" id="add-c">${icon('plus')} Ajouter un identifiant</button>
     </div>
     ${S.credentials.length ? `<div class="cards">${cards}</div>` : `
-      <div class="empty"><div class="big">🔑</div>
+      <div class="empty"><div class="big">${icon('key')}</div>
       <p>Aucun identifiant.<br>Ajoute des connecteurs (SMTP, Supabase, Telegram, Printify…) : ils deviennent des outils que tes agents savent utiliser tout seuls.</p>
-      <button class="btn btn-primary" id="add-c-2">＋ Ajouter un identifiant</button></div>`}
+      <button class="btn btn-primary" id="add-c-2">${icon('plus')} Ajouter un identifiant</button></div>`}
   `);
 
   $('#add-c')?.addEventListener('click', () => openCredentialModal({ onSaved: renderCredentials }));
@@ -470,9 +482,9 @@ function openCredentialModal({ typeId, existing, onSaved } = {}) {
   const m = openModal(`
     <div class="modal">
       <div class="modal-head">
-        <div class="card-ico" style="width:34px;height:34px;font-size:17px">${t.icon}</div>
+        <div class="card-ico" style="width:34px;height:34px;font-size:17px">${emojiIcon(t.icon)}</div>
         <h3>${existing ? 'Modifier' : 'Nouvel identifiant'} — ${esc(t.name)}</h3>
-        <button class="btn btn-ghost btn-icon" data-close>✕</button>
+        <button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button>
       </div>
       <div class="modal-body">
         <div class="hint" style="margin-bottom:16px; font-size:12.5px; color:var(--muted); line-height:1.55">${esc(t.description || '')}</div>
@@ -504,7 +516,7 @@ function openCredentialModal({ typeId, existing, onSaved } = {}) {
         if (!zone) return;
         zone.innerHTML = `
           <div class="oauth-box">
-            <button class="btn btn-primary" id="c-oauth-go" style="width:100%; justify-content:center">🔗 Connecter mon compte ${esc(svc.label)}</button>
+            <button class="btn btn-primary" id="c-oauth-go" style="width:100%; justify-content:center">${icon('link')} Connecter mon compte ${esc(svc.label)}</button>
             <div class="hint" style="text-align:center; margin-top:8px">Une fenêtre ${esc(svc.label)} s'ouvre : tu autorises, et c'est branché. Les identifiants se remplissent tout seuls.</div>
             <div class="oauth-or"><span>ou saisis manuellement</span></div>
           </div>`;
@@ -551,7 +563,7 @@ function openCredentialTypePicker({ onPick }) {
   const cats = [...new Set(S.types.map(t => t.category))];
   const m = openModal(`
     <div class="modal" style="width:600px">
-      <div class="modal-head"><h3>Choisir un connecteur</h3><button class="btn btn-ghost btn-icon" data-close>✕</button></div>
+      <div class="modal-head"><h3>Choisir un connecteur</h3><button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button></div>
       <div class="modal-body">
         <div class="field"><input class="input" id="tp-search" placeholder="Rechercher un connecteur… (Printify, SMTP, Telegram…)"></div>
         <div id="tp-list"></div>
@@ -564,7 +576,7 @@ function openCredentialTypePicker({ onPick }) {
       const items = S.types.filter(t => t.category === cat && (t.name.toLowerCase().includes(ql) || t.description.toLowerCase().includes(ql)));
       if (!items.length) return '';
       return `<div class="sp-cat">${esc(cat)}</div><div class="type-grid" style="margin-bottom:6px">
-        ${items.map(t => `<div class="type-item" data-id="${t.id}"><span class="ico">${t.icon}</span><span class="t">${esc(t.name)}</span></div>`).join('')}
+        ${items.map(t => `<div class="type-item" data-id="${t.id}"><span class="ico">${emojiIcon(t.icon)}</span><span class="t">${esc(t.name)}</span></div>`).join('')}
       </div>`;
     }).join('') || `<div class="out-empty">Aucun connecteur ne correspond.<br>Utilise « HTTP / API générique » pour tout service non listé.</div>`;
     $$('.type-item', m.el).forEach(el => el.addEventListener('click', () => { m.close(); onPick(el.dataset.id); }));
@@ -590,7 +602,7 @@ async function renderExecutions() {
   renderShell('executions', `
     <div class="page-head"><div><h1>Exécutions</h1><div class="sub">Historique de toutes les chaînes lancées</div></div></div>
     ${execs.length ? `<div class="wf-list">${rows}</div>` : `
-      <div class="empty"><div class="big">🕘</div><p>Aucune exécution pour l'instant.<br>Lance un workflow avec le bouton orange dans l'éditeur.</p></div>`}
+      <div class="empty"><div class="big">${icon('history')}</div><p>Aucune exécution pour l'instant.<br>Lance un workflow avec le bouton orange dans l'éditeur.</p></div>`}
   `);
 
   $$('.wf-row').forEach(r => r.addEventListener('click', () => openExecDetail(r.dataset.id)));
@@ -607,11 +619,11 @@ function imageGallery(text) {
 }
 
 function stepHtml(s) {
-  if (s.type === 'llm') return `<div class="step step-llm">💭 ${esc(s.text)}${imageGallery(s.text)}</div>`;
+  if (s.type === 'llm') return `<div class="step step-llm">${icon('sparkles')} ${esc(s.text)}${imageGallery(s.text)}</div>`;
   if (s.type === 'tool:start') return '';
   if (s.type === 'tool:end') return `
     <details class="step step-tool">
-      <summary>🔧 ${esc(s.name)}</summary>
+      <summary>${icon('wrench')} ${esc(s.name)}</summary>
       <pre>${esc(s.result)}</pre>
       ${imageGallery(s.result)}
     </details>`;
@@ -620,11 +632,10 @@ function stepHtml(s) {
 
 async function openExecDetail(execId) {
   const e = await API.get(`/api/executions/${execId}`);
-  const icon = { success: '✅', error: '❌', running: '⏳', stopped: '⏹', skipped: '⏭' };
   const body = (e.logs || []).map((l, i) => `
     <details class="exec-node" ${l.status === 'error' || i === 0 ? 'open' : ''}>
       <summary>
-        <span>${icon[l.status] || '•'}</span>
+        <span>${STATUS_ICO[l.status] || '•'}</span>
         <span style="flex:1">${esc(l.name)}</span>
         <span class="badge status-${l.status}">${STATUS_FR[l.status] || l.status}</span>
         ${l.startedAt && l.finishedAt ? `<span class="wf-meta">${duration(l.startedAt, l.finishedAt)}</span>` : ''}
@@ -641,7 +652,7 @@ async function openExecDetail(execId) {
       <div class="modal-head">
         <h3>Exécution du ${fmtDate(e.started_at)}</h3>
         <span class="badge status-${e.status}">${STATUS_FR[e.status] || e.status}</span>
-        <button class="btn btn-ghost btn-icon" data-close>✕</button>
+        <button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button>
       </div>
       <div class="modal-body">
         ${e.input ? `<div class="field"><label>Donnée d'entrée</label><div class="step-llm">${esc(e.input)}</div></div>` : ''}
@@ -671,8 +682,8 @@ const AGENT_COLORS = ['#ff6d5a', '#6c8cff', '#2fbf71', '#b57bff', '#ffb15e', '#e
    DÉCLENCHEURS (helpers)
    ================================================================ */
 function SOURCE_TAG(source) {
-  if (source === 'cron') return '<span class="src-tag cron">⏰ cron</span>';
-  if (source === 'webhook') return '<span class="src-tag hook">🔗 webhook</span>';
+  if (source === 'cron') return '<span class="src-tag cron">cron</span>';
+  if (source === 'webhook') return '<span class="src-tag hook">webhook</span>';
   return '';
 }
 
@@ -700,14 +711,14 @@ function renderTriggerCard(t) {
   if (t.type === 'cron') {
     return `<div class="trig-card ${on ? '' : 'off'}" data-id="${t.id}">
       <div class="trig-top">
-        <span class="trig-ico">⏰</span>
+        <span class="trig-ico cron">${icon('alarm')}</span>
         <div class="grow"><div class="trig-name">${esc(t.name || 'Cron')}</div>
         <div class="trig-sub mono">${esc(t.config.expression || '')}</div></div>
         <label class="trig-toggle toggle"><input type="checkbox" ${on ? 'checked' : ''}><span class="track"></span></label>
       </div>
       <div class="trig-meta">${esc(cronHuman(t.config.expression))}${t.last_fired_at ? ` · dernier : ${timeAgo(t.last_fired_at)}` : ''}</div>
       <div class="trig-actions">
-        <button class="btn btn-outline btn-sm trig-fire">▶ Tester</button>
+        <button class="btn btn-outline btn-sm trig-fire">${icon('play')} Tester</button>
         <button class="btn btn-outline btn-sm trig-edit">Modifier</button>
         <button class="btn btn-danger btn-sm trig-del">Suppr.</button>
       </div>
@@ -715,15 +726,15 @@ function renderTriggerCard(t) {
   }
   return `<div class="trig-card ${on ? '' : 'off'}" data-id="${t.id}">
     <div class="trig-top">
-      <span class="trig-ico">🔗</span>
+      <span class="trig-ico hook">${icon('link')}</span>
       <div class="grow"><div class="trig-name">${esc(t.name || 'Webhook')}</div>
       <div class="trig-sub">${t.config.inputMode === 'fixed' ? 'entrée fixe' : 'le corps de la requête devient l\'entrée'}</div></div>
       <label class="trig-toggle toggle"><input type="checkbox" ${on ? 'checked' : ''}><span class="track"></span></label>
     </div>
     <div class="trig-url mono">${esc(webhookUrl(t))}</div>
     <div class="trig-actions">
-      <button class="btn btn-outline btn-sm trig-copy">📋 Copier l'URL</button>
-      <button class="btn btn-outline btn-sm trig-fire">▶ Tester</button>
+      <button class="btn btn-outline btn-sm trig-copy">${icon('clipboard')} Copier l'URL</button>
+      <button class="btn btn-outline btn-sm trig-fire">${icon('play')} Tester</button>
       <button class="btn btn-outline btn-sm trig-edit">Modifier</button>
       <button class="btn btn-danger btn-sm trig-del">Suppr.</button>
     </div>
@@ -735,7 +746,7 @@ function openCronModal(workflowId, existing, onSaved) {
   const m = openModal(`
     <div class="modal" style="width:540px">
       <div class="modal-head"><h3>${existing ? 'Modifier' : 'Nouveau'} déclencheur planifié</h3>
-        <button class="btn btn-ghost btn-icon" data-close>✕</button></div>
+        <button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button></div>
       <div class="modal-body">
         <div class="field"><label>Nom</label>
           <input class="input" id="cr-name" value="${esc(existing?.name || 'Déclencheur cron')}"></div>
@@ -792,7 +803,7 @@ function openWebhookModal(workflowId, existing, onSaved) {
   const m = openModal(`
     <div class="modal" style="width:560px">
       <div class="modal-head"><h3>${existing ? 'Modifier' : 'Nouveau'} webhook</h3>
-        <button class="btn btn-ghost btn-icon" data-close>✕</button></div>
+        <button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button></div>
       <div class="modal-body">
         <div class="field"><label>Nom</label>
           <input class="input" id="wh-name" value="${esc(existing?.name || 'Webhook')}"></div>
@@ -849,7 +860,7 @@ async function renderEditor(id) {
   $('#app').innerHTML = `
     <div class="editor">
       <div class="topbar">
-        <button class="back" id="ed-back" title="Retour aux workflows">←</button>
+        <button class="back" id="ed-back" title="Retour aux workflows">${icon('arrowLeft')}</button>
         <input class="wf-title-input" id="ed-title" value="${esc(wf.name)}">
         <span class="dirty-dot" id="ed-dirty" title="Modifications non enregistrées"></span>
         <div class="spacer"></div>
@@ -859,30 +870,30 @@ async function renderEditor(id) {
         <button class="btn btn-outline" id="ed-save">Enregistrer <span class="kbd">Ctrl+S</span></button>
       </div>
       <div class="canvas-wrap" id="ed-wrap">
-        <button class="canvas-add" id="ed-add" title="Ajouter un agent">＋</button>
+        <button class="canvas-add" id="ed-add" title="Ajouter un agent">${icon('plus')}</button>
         <div class="zoom-ctrl">
-          <button id="z-in" title="Zoomer">＋</button>
-          <button id="z-out" title="Dézoomer">−</button>
-          <button id="z-fit" title="Ajuster à la vue">⤢</button>
+          <button id="z-in" title="Zoomer">${icon('plus')}</button>
+          <button id="z-out" title="Dézoomer">${icon('minus')}</button>
+          <button id="z-fit" title="Ajuster à la vue">${icon('maximize')}</button>
           <button id="z-reset" title="Zoom 100%">1:1</button>
         </div>
         <div class="exec-bar">
-          <button class="exec-hist-btn" id="ed-settings">⚙️ Réglages</button>
-          <button class="exec-hist-btn" id="ed-triggers">⏰ Déclencheurs</button>
-          <button class="exec-hist-btn" id="ed-hist">🕘 Historique</button>
-          <button class="exec-btn" id="ed-run">▶ Exécuter la chaîne</button>
+          <button class="exec-hist-btn" id="ed-settings">${icon('sliders')} Réglages</button>
+          <button class="exec-hist-btn" id="ed-triggers">${icon('alarm')} Déclencheurs</button>
+          <button class="exec-hist-btn" id="ed-hist">${icon('history')} Historique</button>
+          <button class="exec-btn" id="ed-run">${icon('play')} Exécuter la chaîne</button>
         </div>
         <div class="side-panel" id="add-panel">
-          <div class="sp-head"><h3>Ajouter un agent</h3><button class="sp-close" id="add-close">✕</button></div>
+          <div class="sp-head"><h3>Ajouter un agent</h3><button class="sp-close" id="add-close">${icon('x')}</button></div>
           <div class="sp-search"><input class="input" id="add-search" placeholder="Rechercher un modèle d'agent…"></div>
           <div class="sp-body" id="add-body"></div>
         </div>
         <div class="side-panel" id="trigger-panel">
-          <div class="sp-head"><h3>Déclencheurs</h3><button class="sp-close" id="trig-close">✕</button></div>
+          <div class="sp-head"><h3>Déclencheurs</h3><button class="sp-close" id="trig-close">${icon('x')}</button></div>
           <div class="sp-body" id="trig-body"><div class="out-empty">Chargement…</div></div>
         </div>
         <div class="side-panel left" id="hist-panel">
-          <div class="sp-head"><h3>Exécutions</h3><button class="sp-close" id="hist-close">✕</button></div>
+          <div class="sp-head"><h3>Exécutions</h3><button class="sp-close" id="hist-close">${icon('x')}</button></div>
           <div class="sp-body" id="hist-body"><div class="out-empty">Chargement…</div></div>
         </div>
       </div>
@@ -924,7 +935,7 @@ async function renderEditor(id) {
   $('#ed-settings').addEventListener('click', () => {
     const m = openModal(`
       <div class="modal" style="max-width:560px">
-        <div class="modal-head"><h3>⚙️ Réglages de la chaîne</h3><button class="sp-close" data-close>✕</button></div>
+        <div class="modal-head"><h3>${icon('sliders')} Réglages de la chaîne</h3><button class="sp-close" data-close>${icon('x')}</button></div>
         <div class="modal-body">
           <div class="field"><label>Webhook de notification en cas d'échec</label>
             <input class="input mono" id="set-notify" value="${esc(wfSettings.notifyWebhookUrl || '')}" placeholder="https://discord.com/api/webhooks/…">
@@ -972,7 +983,7 @@ async function renderEditor(id) {
       <div class="sp-cat">Modèles d'agents</div>
       ${AGENT_TEMPLATES.filter(t => t.name.toLowerCase().includes(ql) || t.d.toLowerCase().includes(ql)).map((t, i) => `
         <div class="sp-item" data-i="${i}">
-          <div class="ico" style="background:${t.color}26">${t.icon}</div>
+          <div class="ico" style="background:${t.color}26;color:${t.color}">${emojiIcon(t.icon)}</div>
           <div><div class="t">${esc(t.name)}</div><div class="d">${esc(t.d)}</div></div>
         </div>`).join('') || '<div class="out-empty">Aucun modèle ne correspond.</div>'}`;
     $$('#add-body .sp-item').forEach(el => el.addEventListener('click', () => {
@@ -1002,7 +1013,7 @@ async function renderEditor(id) {
     const execs = await API.get(`/api/executions?workflowId=${wf.id}`);
     $('#hist-body').innerHTML = execs.length ? execs.map(e => `
       <div class="exec-row ${e.id === selId ? 'sel' : ''}" data-id="${e.id}">
-        <span>${{ success: '✅', error: '❌', running: '⏳', stopped: '⏹' }[e.status] || '•'}</span>
+        <span>${STATUS_ICO[e.status] || '•'}</span>
         <div style="flex:1">
           <div class="t">${fmtDate(e.started_at)} ${SOURCE_TAG(e.source)}</div>
           <div class="d">${e.finished_at ? duration(e.started_at, e.finished_at) : 'en cours…'}</div>
@@ -1035,8 +1046,8 @@ async function renderEditor(id) {
     const body = $('#trig-body');
     body.innerHTML = `
       <div class="trig-add">
-        <button class="btn btn-outline btn-sm" id="trig-add-cron">⏰ Planifier (cron)</button>
-        <button class="btn btn-outline btn-sm" id="trig-add-hook">🔗 Webhook</button>
+        <button class="btn btn-outline btn-sm" id="trig-add-cron">${icon('alarm')} Planifier (cron)</button>
+        <button class="btn btn-outline btn-sm" id="trig-add-hook">${icon('link')} Webhook</button>
       </div>
       <div class="hint" style="margin:2px 2px 14px">Un déclencheur lance cette chaîne automatiquement, même quand tu n'es pas là.</div>
       ${triggers.length ? triggers.map(renderTriggerCard).join('') : '<div class="out-empty" style="padding:20px 8px">Aucun déclencheur.<br>Planifie une exécution ou crée un webhook.</div>'}`;
@@ -1082,10 +1093,10 @@ async function renderEditor(id) {
   function updateRunBtn() {
     if (S.runningExecId) {
       runBtn.classList.add('stop');
-      runBtn.innerHTML = '■ Arrêter';
+      runBtn.innerHTML = `${icon('stop')} Arrêter`;
     } else {
       runBtn.classList.remove('stop');
-      runBtn.innerHTML = '▶ Exécuter la chaîne';
+      runBtn.innerHTML = `${icon('play')} Exécuter la chaîne`;
     }
   }
   runBtn.addEventListener('click', async () => {
@@ -1099,7 +1110,7 @@ async function renderEditor(id) {
 
     const m = openModal(`
       <div class="modal">
-        <div class="modal-head"><h3>Exécuter la chaîne</h3><button class="btn btn-ghost btn-icon" data-close>✕</button></div>
+        <div class="modal-head"><h3>Exécuter la chaîne</h3><button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button></div>
         <div class="modal-body">
           <div class="field"><label>Donnée d'entrée pour le premier agent (optionnel)</label>
             <textarea class="textarea" id="run-input" placeholder="Ex. : Sujet du jour : les bornes de recharge en copropriété…"></textarea>
@@ -1107,7 +1118,7 @@ async function renderEditor(id) {
         </div>
         <div class="modal-foot">
           <button class="btn btn-outline" data-close>Annuler</button>
-          <button class="btn btn-primary" id="run-go">▶ Lancer</button>
+          <button class="btn btn-primary" id="run-go">${icon('play')} Lancer</button>
         </div>
       </div>`);
     $('#run-go', m.el).addEventListener('click', async () => {
@@ -1144,7 +1155,7 @@ async function renderEditor(id) {
       case 'exec:done':
         if (msg.execId === S.runningExecId) {
           const st = msg.status;
-          toast(st === 'success' ? '✅ Chaîne terminée avec succès' : st === 'stopped' ? '⏹ Chaîne arrêtée' : '❌ La chaîne s\'est arrêtée en erreur', st === 'success' ? 'success' : st === 'error' ? 'error' : '');
+          toast(st === 'success' ? 'Chaîne terminée avec succès' : st === 'stopped' ? 'Chaîne arrêtée' : 'La chaîne s\'est arrêtée en erreur', st === 'success' ? 'success' : st === 'error' ? 'error' : '');
           const doneId = S.runningExecId;
           S.runningExecId = null;
           updateRunBtn();
@@ -1154,7 +1165,7 @@ async function renderEditor(id) {
         break;
       case 'trigger:fired':
         if (msg.workflowId === wf.id) {
-          toast(msg.source === 'cron' ? '⏰ Déclenchement planifié en cours' : msg.source === 'webhook' ? '🔗 Webhook reçu — chaîne lancée' : 'Chaîne lancée', '');
+          toast(msg.source === 'cron' ? 'Déclenchement planifié en cours' : msg.source === 'webhook' ? 'Webhook reçu — chaîne lancée' : 'Chaîne lancée', '');
         }
         break;
       case 'trigger:error':
@@ -1188,7 +1199,7 @@ function openNDV(node, cv) {
     const on = (cfg.credentialIds || []).includes(c.id);
     return `<label class="cred-check ${on ? 'sel' : ''}">
       <input type="checkbox" data-cred="${c.id}" ${on ? 'checked' : ''}>
-      <span class="ci">${t.icon}</span>
+      <span class="ci">${emojiIcon(t.icon)}</span>
       <span class="cn">${esc(c.name)}</span>
       <span class="ct">${esc(t.name)}</span>
     </label>`;
@@ -1197,9 +1208,9 @@ function openNDV(node, cv) {
   const m = openModal(`
     <div class="modal ndv">
       <div class="modal-head">
-        <div class="card-ico" style="width:36px;height:36px;font-size:18px;background:${cfg.color || '#ff6d5a'}26" id="ndv-head-ico">${esc(cfg.icon || '🤖')}</div>
+        <div class="card-ico" style="width:36px;height:36px;font-size:18px;background:${cfg.color || '#ff6d5a'}26;color:${cfg.color || '#ff6d5a'}" id="ndv-head-ico">${emojiIcon(cfg.icon)}</div>
         <h3 style="display:flex;align-items:center;gap:10px">Configuration de l'agent</h3>
-        <button class="btn btn-ghost btn-icon" data-close>✕</button>
+        <button class="btn btn-ghost btn-icon" data-close>${icon('x')}</button>
       </div>
       <div class="modal-body">
         <div class="ndv-params">
@@ -1207,7 +1218,7 @@ function openNDV(node, cv) {
             <input class="input" id="ndv-name" value="${esc(node.name)}"></div>
 
           <div class="field"><label>Icône</label>
-            <div class="ico-pick">${AGENT_ICONS.map(i => `<button class="ico-btn ${cfg.icon === i ? 'sel' : ''}" data-ico="${i}">${i}</button>`).join('')}</div></div>
+            <div class="ico-pick">${AGENT_ICONS.map(i => `<button class="ico-btn ${cfg.icon === i ? 'sel' : ''}" data-ico="${i}">${emojiIcon(i)}</button>`).join('')}</div></div>
 
           <div class="field"><label>Couleur</label>
             <div class="color-pick">${AGENT_COLORS.map(c => `<span class="color-dot ${cfg.color === c ? 'sel' : ''}" data-color="${c}" style="background:${c}"></span>`).join('')}</div></div>
@@ -1236,7 +1247,7 @@ function openNDV(node, cv) {
 
           <div class="field"><label>Connecteurs de l'agent (ses outils)</label>
             <div id="ndv-creds">${credRows()}</div>
-            <button class="btn btn-outline btn-sm" id="ndv-new-cred">＋ Nouvel identifiant</button></div>
+            <button class="btn btn-outline btn-sm" id="ndv-new-cred">${icon('plus')} Nouvel identifiant</button></div>
 
           <div class="ndv-sep">Fiabilité</div>
 
@@ -1283,12 +1294,12 @@ function openNDV(node, cv) {
         <div class="ndv-output">
           <div class="ndv-output-head"><span>Test de l'agent</span><span id="ndv-test-status"></span></div>
           <div class="ndv-output-body" id="ndv-steps">
-            <div class="out-empty"><div class="big">🧪</div>Teste cet agent seul, sans lancer toute la chaîne.<br>Il utilisera réellement ses connecteurs.</div>
+            <div class="out-empty"><div class="big">${icon('flask')}</div>Teste cet agent seul, sans lancer toute la chaîne.<br>Il utilisera réellement ses connecteurs.</div>
           </div>
           <div class="ndv-input-zone">
             <div class="field" style="margin-bottom:10px"><label>Entrée simulée (ce que l'agent précédent lui enverrait)</label>
               <textarea class="textarea" id="ndv-test-input" style="min-height:60px"></textarea></div>
-            <button class="btn btn-primary" id="ndv-test" style="width:100%; justify-content:center">▶ Tester l'agent</button>
+            <button class="btn btn-primary" id="ndv-test" style="width:100%; justify-content:center">${icon('play')} Tester l'agent</button>
           </div>
         </div>
       </div>
@@ -1321,13 +1332,14 @@ function openNDV(node, cv) {
     $$('.ico-btn', m.el).forEach(x => x.classList.remove('sel'));
     b.classList.add('sel');
     cfg.icon = b.dataset.ico;
-    $('#ndv-head-ico', m.el).textContent = cfg.icon;
+    $('#ndv-head-ico', m.el).innerHTML = emojiIcon(cfg.icon);
   }));
   $$('.color-dot', m.el).forEach(b => b.addEventListener('click', () => {
     $$('.color-dot', m.el).forEach(x => x.classList.remove('sel'));
     b.classList.add('sel');
     cfg.color = b.dataset.color;
     $('#ndv-head-ico', m.el).style.background = cfg.color + '26';
+    $('#ndv-head-ico', m.el).style.color = cfg.color;
   }));
 
   const syncModels = () => {

@@ -25,6 +25,12 @@ const LCanvas = (() => {
     container.innerHTML = `
       <div class="canvas">
         <svg xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="molten-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#ff6d5a"/>
+              <stop offset="100%" stop-color="#ffa24b"/>
+            </linearGradient>
+          </defs>
           <g class="conn-group"></g>
           <g class="temp-group"></g>
         </svg>
@@ -99,13 +105,13 @@ const LCanvas = (() => {
         const color = n.config?.color || '#ff6d5a';
         return `<div class="node ${st} ${sel ? 'selected' : ''}" data-id="${n.id}" style="left:${n.x}px; top:${n.y}px">
           <div class="node-actions">
-            <button class="act-open" title="Configurer & tester">⚙</button>
-            <button class="act-dup" title="Dupliquer">⧉</button>
-            <button class="act-del del" title="Supprimer">🗑</button>
+            <button class="act-open" title="Configurer & tester">${icon('sliders')}</button>
+            <button class="act-dup" title="Dupliquer">${icon('copy')}</button>
+            <button class="act-del del" title="Supprimer">${icon('trash')}</button>
           </div>
           <div class="node-box">
-            <div class="node-ico" style="background:${color}26">${esc(n.config?.icon || '🤖')}</div>
-            <div class="node-badge ok">✓</div>
+            <div class="node-ico" style="background:${color}26;color:${color}">${emojiIcon(n.config?.icon)}</div>
+            <div class="node-badge ok">${icon('check')}</div>
             <div class="node-badge err">!</div>
             <div class="node-badge run"><span class="spinner"></span></div>
             <div class="handle handle-in" data-id="${n.id}"></div>
