@@ -609,3 +609,8 @@ input[type=range] { flex: 1; accent-color: var(--primary); }
 .node.router::after { content: "🔀"; position: absolute; top: -8px; right: -8px; font-size: 13px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 50%; padding: 2px 3px; }
 .step-route { color: var(--primary); font-weight: 600; }
+
+/* v3.4 — OAuth intégré */
+.oauth-box { margin-bottom: 18px; }
+.oauth-or { display: flex; align-items: center; gap: 12px; margin: 16px 0 4px; color: var(--muted-2); font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; }
+.oauth-or::before, .oauth-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }

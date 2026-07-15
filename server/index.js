@@ -32,6 +32,7 @@ const { encrypt, decrypt, hashPassword, verifyPassword } = cryptoMod;
 const { listTypes } = require('./connectors');
 const { runWorkflow, stopExecution, testAgent, callLLM } = require('./engine');
 const { initScheduler, syncTriggers, fireTrigger, nextRuns } = require('./scheduler');
+const oauth = require('./oauth');
 
 const PORT = Number(process.env.PORT || 3200);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -109,6 +110,7 @@ fastify.addHook('onRequest', async (req, reply) => {
   const urlPath = req.url.split('?')[0];
   if (PUBLIC_API.has(urlPath) || urlPath === '/api/ws') return;
   if (urlPath.startsWith('/api/hooks/')) return; // webhooks : sécurisés par leur secret dans l'URL
+  if (/^\/api\/oauth\/[^/]+\/callback$/.test(urlPath)) return; // retour du fournisseur OAuth : identité via le state
   if (!isAuthed(req)) return reply.code(401).send({ error: 'Non authentifié' });
 });
 
@@ -121,7 +123,7 @@ fastify.get('/api/bootstrap', async (req) => {
   const uid = currentUserId(req);
   let email = null;
   if (uid) email = db.prepare('SELECT email FROM users WHERE id = ?').get(uid)?.email || null;
-  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.3.0' };
+  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.4.0' };
 });
 
 fastify.post('/api/auth/register', async (req, reply) => {
@@ -242,6 +244,58 @@ fastify.post('/api/providers/test', async (req, reply) => {
 
 /* ---------- Connecteurs & credentials ---------- */
 fastify.get('/api/connectors/types', async () => listTypes());
+
+/* ---------- OAuth intégré ---------- */
+function oauthRedirectUri(service) {
+  const base = (process.env.LUSINE_PUBLIC_URL || '').replace(/\/+$/, '');
+  return `${base}/api/oauth/${service}/callback`;
+}
+
+fastify.get('/api/oauth/services', async () => oauth.listServices());
+
+fastify.get('/api/oauth/:service/start', async (req, reply) => {
+  const uid = currentUserId(req);
+  try {
+    const url = oauth.startAuth({
+      service: req.params.service,
+      userId: uid,
+      redirectUri: oauthRedirectUri(req.params.service),
+      credName: req.query?.name
+    });
+    return { url };
+  } catch (e) {
+    return reply.code(400).send({ error: e.message });
+  }
+});
+
+fastify.get('/api/oauth/:service/callback', async (req, reply) => {
+  const page = (title, body, ok) => `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:system-ui;background:#12131a;color:#ecedf3;display:grid;place-items:center;height:100vh;margin:0}
+.card{max-width:420px;text-align:center;padding:40px;background:#1b1c26;border-radius:16px;border:1px solid rgba(255,255,255,.1)}
+.big{font-size:44px;margin-bottom:14px}</style></head>
+<body><div class="card"><div class="big">${ok ? '✅' : '❌'}</div><h2>${title}</h2><p style="color:#9ea0b4">${body}</p></div>
+<script>try{window.opener&&window.opener.postMessage({lusineOauth:${ok ? "'done'" : "'error'"}},'*')}catch(e){}
+setTimeout(()=>window.close(), ${ok ? 1800 : 6000});</script></body></html>`;
+
+  const { code, state, error, error_description } = req.query || {};
+  if (error) {
+    return reply.type('text/html').send(page('Connexion refusée', String(error_description || error), false));
+  }
+  if (!code || !state) {
+    return reply.type('text/html').send(page('Paramètres manquants', 'Le fournisseur n\'a pas renvoyé de code.', false));
+  }
+  try {
+    const r = await oauth.finishAuth({ state, code, redirectUri: oauthRedirectUri(req.params.service) });
+    if (!r.userId) throw new Error('Session utilisateur introuvable');
+    const id = crypto.randomUUID();
+    db.prepare('INSERT INTO credentials (id, name, type, data_enc, user_id) VALUES (?, ?, ?, ?, ?)')
+      .run(id, r.credName, r.credentialType, encrypt(JSON.stringify(r.data)), r.userId);
+    return reply.type('text/html').send(page('Connecté !', `Ton compte ${r.credName} est branché. Cette fenêtre va se fermer.`, true));
+  } catch (e) {
+    return reply.type('text/html').send(page('Échec de la connexion', e.message, false));
+  }
+});
+
 
 fastify.get('/api/credentials', async (req) => {
   const uid = currentUserId(req);

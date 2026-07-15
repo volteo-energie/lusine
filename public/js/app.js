@@ -476,6 +476,7 @@ function openCredentialModal({ typeId, existing, onSaved } = {}) {
       </div>
       <div class="modal-body">
         <div class="hint" style="margin-bottom:16px; font-size:12.5px; color:var(--muted); line-height:1.55">${esc(t.description || '')}</div>
+        <div id="c-oauth-zone"></div>
         <div class="field"><label>Nom de l'identifiant</label>
           <input class="input" id="c-name" value="${esc(existing?.name || t.name)}"></div>
         ${t.fields.map(f => `
@@ -491,6 +492,43 @@ function openCredentialModal({ typeId, existing, onSaved } = {}) {
         <button class="btn btn-primary" id="c-save">${existing ? 'Enregistrer' : 'Créer'}</button>
       </div>
     </div>`);
+
+  /* ----- OAuth intégré : bouton « Connecter » si le service le propose ----- */
+  if (!existing) {
+    (async () => {
+      try {
+        if (!S.oauthServices) S.oauthServices = await API.get('/api/oauth/services');
+        const svc = S.oauthServices.find(s => s.credentialType === t.id && s.configured);
+        if (!svc) return;
+        const zone = $('#c-oauth-zone', m.el);
+        if (!zone) return;
+        zone.innerHTML = `
+          <div class="oauth-box">
+            <button class="btn btn-primary" id="c-oauth-go" style="width:100%; justify-content:center">🔗 Connecter mon compte ${esc(svc.label)}</button>
+            <div class="hint" style="text-align:center; margin-top:8px">Une fenêtre ${esc(svc.label)} s'ouvre : tu autorises, et c'est branché. Les identifiants se remplissent tout seuls.</div>
+            <div class="oauth-or"><span>ou saisis manuellement</span></div>
+          </div>`;
+        $('#c-oauth-go', m.el).addEventListener('click', async () => {
+          try {
+            const name = $('#c-name', m.el).value.trim() || svc.label;
+            const { url } = await API.get(`/api/oauth/${svc.id}/start?name=${encodeURIComponent(name)}`);
+            const pop = window.open(url, 'lusine-oauth', 'width=640,height=760');
+            const onMsg = (ev) => {
+              if (ev.data?.lusineOauth === 'done') {
+                window.removeEventListener('message', onMsg);
+                m.close(); toast('Compte connecté ✓', 'success'); onSaved && onSaved();
+              }
+            };
+            window.addEventListener('message', onMsg);
+            // filet de sécurité si postMessage est bloqué : on rafraîchit à la fermeture de la popup
+            const iv = setInterval(() => {
+              if (pop && pop.closed) { clearInterval(iv); window.removeEventListener('message', onMsg); m.close(); onSaved && onSaved(); }
+            }, 800);
+          } catch (e) { $('#c-err', m.el).textContent = e.message; }
+        });
+      } catch (_) { /* pas d'OAuth dispo : la saisie manuelle reste */ }
+    })();
+  }
 
   $('#c-save', m.el).addEventListener('click', async () => {
     const data = {};
