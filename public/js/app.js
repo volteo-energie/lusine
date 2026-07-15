@@ -1215,6 +1215,21 @@ function openNDV(node, cv) {
             </select>
             <div class="hint">Utile pour les APIs capricieuses : l'agent retente avant d'abandonner.</div></div>
 
+          <div class="ndv-sep">Boucle</div>
+
+          <div class="field">
+            <label class="check-row">
+              <input type="checkbox" id="ndv-loop" ${cfg.loop === 'foreach' ? 'checked' : ''}>
+              <span>Traiter les éléments <strong>un par un</strong></span>
+            </label>
+            <div class="hint">L'agent découpe ce qu'il reçoit en éléments et s'exécute une fois par élément, avec un contexte propre à chaque fois. Idéal pour « publie chacun de ces 3 produits ».</div></div>
+          <div class="two-fields">
+            <div class="field"><label>Éléments max</label>
+              <input class="input" type="number" min="1" max="50" id="ndv-loop-max" value="${cfg.loopMaxItems ?? 10}"></div>
+            <div class="field"><label>Un élément = (optionnel)</label>
+              <input class="input" id="ndv-loop-hint" value="${esc(cfg.loopSplitHint || '')}" placeholder="une fiche produit"></div>
+          </div>
+
           <div class="ndv-sep">Aiguillage</div>
 
           <div class="field">
@@ -1257,6 +1272,9 @@ function openNDV(node, cv) {
     cfg.onError = $('#ndv-onerror', m.el).value;
     cfg.isRouter = $('#ndv-router', m.el).checked;
     cfg.routeHint = $('#ndv-route-hint', m.el).value.trim();
+    cfg.loop = $('#ndv-loop', m.el).checked ? 'foreach' : '';
+    cfg.loopMaxItems = Math.min(Math.max(Number($('#ndv-loop-max', m.el).value) || 10, 1), 50);
+    cfg.loopSplitHint = $('#ndv-loop-hint', m.el).value.trim();
   }
 
   m.el.addEventListener('input', () => { $('#ndv-temp-val', m.el).textContent = $('#ndv-temp', m.el).value; });

@@ -191,6 +191,41 @@ function topoSort(nodes, connections) {
   return order;
 }
 
+/* ---------- Boucle : découpe une entrée en éléments à traiter un par un ---------- */
+async function splitItems({ node, input, userId, hint, max }) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return [];
+  // 1) Si l'entrée est déjà un tableau JSON, on l'utilise tel quel
+  try {
+    const j = JSON.parse(raw);
+    if (Array.isArray(j) && j.length) {
+      return j.map(x => (typeof x === 'string' ? x : JSON.stringify(x, null, 2))).slice(0, max);
+    }
+  } catch (_) { /* pas du JSON, on passe au découpage intelligent */ }
+
+  // 2) Découpage par le LLM
+  const cfg = node.config || {};
+  const provider = getProvider(cfg.providerId, userId);
+  const model = cfg.model || provider?.default_model;
+  if (!provider || !model) return [raw];
+  const system = `Tu découpes un contenu en éléments distincts, destinés à être traités séparément.${hint ? `\nUn élément = ${hint}.` : ''}
+Réponds UNIQUEMENT par un tableau JSON de chaînes de caractères. Chaque chaîne doit contenir TOUT le contenu de son élément (ne perds aucune information utile : titres, descriptions, prix, URLs…).
+Aucun autre texte, aucune balise markdown. Si le contenu ne contient qu'un seul élément, renvoie un tableau d'un seul élément.`;
+  try {
+    const r = await callLLM(provider, {
+      model, system, tools: [], temperature: 0,
+      messages: [{ role: 'user', content: trunc(raw, 12000) }]
+    });
+    let txt = String(r.text || '').trim()
+      .replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const arr = JSON.parse(txt);
+    if (Array.isArray(arr) && arr.length) {
+      return arr.map(x => (typeof x === 'string' ? x : JSON.stringify(x, null, 2))).slice(0, max);
+    }
+  } catch (_) { /* découpage impossible → on traite en un seul bloc */ }
+  return [raw];
+}
+
 /* ---------- Aiguillage : l'agent choisit lui-même la branche suivante ---------- */
 async function chooseRoute({ node, output, candidates, userId }) {
   const cfg = node.config || {};
@@ -304,25 +339,54 @@ async function runWorkflow({ workflowId, input, broadcast, source, userId }) {
         const retries = Math.min(Math.max(Number(cfg.retries) || 0, 0), 5);
         const retryDelay = Math.max(Number(cfg.retryDelay) || 3, 1) * 1000;
 
+        const pushStep = (step) => {
+          log.steps.push(step);
+          broadcast({ type: 'node:step', execId, nodeId, step });
+        };
+        const runOnce = (inp) => runWithRetry(() => runAgent({
+          node,
+          input: inp,
+          userId: ownerId,
+          shouldStop: () => running.get(execId)?.stop,
+          onStep: pushStep
+        }), {
+          retries, delayMs: retryDelay,
+          onRetry: (n, e) => {
+            pushStep({ type: 'llm', text: `⚠️ Échec (${e.message}) — nouvelle tentative ${n}/${retries} dans ${retryDelay / 1000}s…` });
+            saveLogs('running');
+          }
+        });
+
         try {
-          const output = await runWithRetry(() => runAgent({
-            node,
-            input: nodeInput,
-            userId: ownerId,
-            shouldStop: () => running.get(execId)?.stop,
-            onStep: (step) => {
-              log.steps.push(step);
-              broadcast({ type: 'node:step', execId, nodeId, step });
-            }
-          }), {
-            retries, delayMs: retryDelay,
-            onRetry: (n, e) => {
-              const step = { type: 'llm', text: `⚠️ Échec (${e.message}) — nouvelle tentative ${n}/${retries} dans ${retryDelay / 1000}s…` };
-              log.steps.push(step);
-              broadcast({ type: 'node:step', execId, nodeId, step });
+          let output;
+          if (cfg.loop === 'foreach') {
+            const max = Math.min(Math.max(Number(cfg.loopMaxItems) || 10, 1), 50);
+            const items = await splitItems({ node, input: nodeInput, userId: ownerId, hint: cfg.loopSplitHint, max });
+            if (items.length > 1) {
+              pushStep({ type: 'llm', text: `🔁 ${items.length} élément(s) à traiter un par un` });
               saveLogs('running');
+              const results = [];
+              for (let i = 0; i < items.length; i++) {
+                if (running.get(execId)?.stop) throw new Error('__STOPPED__');
+                pushStep({ type: 'llm', text: `— Élément ${i + 1}/${items.length}` });
+                saveLogs('running');
+                try {
+                  results.push(`### Élément ${i + 1}/${items.length}\n${await runOnce(items[i])}`);
+                } catch (e) {
+                  if (e.message === '__STOPPED__') throw e;
+                  if (cfg.onError === 'continue') {
+                    results.push(`### Élément ${i + 1}/${items.length}\n⚠️ Échec : ${e.message}`);
+                    pushStep({ type: 'llm', text: `⚠️ Élément ${i + 1} en échec — on passe au suivant` });
+                  } else throw e;
+                }
+              }
+              output = results.join('\n\n');
+            } else {
+              output = await runOnce(items[0] ?? nodeInput);
             }
-          });
+          } else {
+            output = await runOnce(nodeInput);
+          }
           log.status = 'success';
           log.output = output;
           log.finishedAt = new Date().toISOString();
