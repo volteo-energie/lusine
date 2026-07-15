@@ -1,7 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const { db } = require('./db');
-const { decrypt } = require('./crypto');
+const { decrypt, encrypt } = require('./crypto');
 const { buildToolsForCredential, trunc } = require('./connectors');
 
 /* ------------------------------------------------------------------ */
@@ -93,7 +93,14 @@ function buildAgentTools(credentialIds = [], userId) {
     if (!row) continue;
     let data = {};
     try { data = JSON.parse(decrypt(row.data_enc)); } catch { continue; }
-    for (const tool of buildToolsForCredential(row.type, data, { userId })) {
+    // Permet à un connecteur de sauvegarder des données mises à jour (ex: token OAuth rafraîchi)
+    const persist = (patch) => {
+      try {
+        Object.assign(data, patch);
+        db.prepare('UPDATE credentials SET data_enc = ? WHERE id = ?').run(encrypt(JSON.stringify(data)), row.id);
+      } catch (_) { /* best effort */ }
+    };
+    for (const tool of buildToolsForCredential(row.type, data, { userId, persist })) {
       let name = tool.name, i = 2;
       while (seen.has(name)) name = `${tool.name}_${i++}`;
       seen.add(name);

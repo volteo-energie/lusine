@@ -506,17 +506,6 @@ const PRESETS = [
     description: 'API Printify complète (print on demand) : boutiques, catalogue, produits, commandes.'
   },
   {
-    id: 'etsy', name: 'Etsy', icon: '🧶', category: 'E-commerce',
-    base: 'https://openapi.etsy.com/v3', auth: ['header', 'x-api-key'],
-    fields: [
-      { key: 'token', label: 'Keystring (clé API)', type: 'password', required: true },
-      { key: 'accessToken', label: 'Token OAuth (pour les endpoints privés)', type: 'password' }
-    ],
-    authExtra: (d) => d.accessToken ? { Authorization: `Bearer ${d.accessToken}` } : {},
-    hint: 'Endpoints : GET /application/openapi-ping · GET /application/shops/{shop_id}/listings/active. Les endpoints privés demandent le token OAuth.',
-    description: 'API Etsy v3 : boutiques, annonces, commandes (OAuth requis pour l\'écriture).'
-  },
-  {
     id: 'shopify', name: 'Shopify', icon: '🛍️', category: 'E-commerce',
     base: (d) => `https://${String(d.shopDomain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '')}/admin/api/2024-10`,
     auth: ['header', 'X-Shopify-Access-Token'],
@@ -581,6 +570,184 @@ for (const p of PRESETS) {
     buildTools(data) { return [makeServiceTool(p.id, p.name, p, data)]; }
   });
 }
+
+/* ---------- Etsy (connecteur dédié : OAuth 2.0 + refresh auto + publication) ---------- */
+register({
+  id: 'etsy', name: 'Etsy (boutique)', icon: '🧵', category: 'E-commerce',
+  description: "Publie et gère des annonces sur TA boutique Etsy. Gère l'OAuth 2.0 et le rafraîchissement automatique du token.",
+  fields: [
+    { key: 'keystring', label: 'Keystring (clé API de ta Seller App)', type: 'password', required: true },
+    { key: 'refresh_token', label: 'Refresh token OAuth (scope listings_w listings_r)', type: 'password', required: true },
+    { key: 'shop_id', label: 'Shop ID (identifiant numérique de ta boutique)', required: true },
+    { key: 'shipping_profile_id', label: "Shipping profile ID (requis pour un produit physique)" },
+    { key: 'return_policy_id', label: 'Return policy ID (requis pour un produit physique)' },
+    { key: 'default_taxonomy_id', label: 'Catégorie par défaut (taxonomy_id, optionnel)' }
+  ],
+  buildTools(data, ctx) {
+    const API = 'https://api.etsy.com/v3';
+    const persist = ctx && ctx.persist;
+
+    async function ensureToken() {
+      const now = Date.now();
+      if (data.access_token && data.token_expiry && now < data.token_expiry - 60000) return data.access_token;
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: data.keystring,
+        refresh_token: data.refresh_token
+      });
+      const r = await doFetch(`${API}/public/oauth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      });
+      let j; try { j = JSON.parse(r.text); } catch { throw new Error('Réponse OAuth Etsy illisible : ' + r.text.slice(0, 200)); }
+      if (!j.access_token) throw new Error('Rafraîchissement du token échoué : ' + (j.error_description || j.error || r.text.slice(0, 200)));
+      data.access_token = j.access_token;
+      data.token_expiry = Date.now() + (Number(j.expires_in || 3600) * 1000);
+      if (j.refresh_token) data.refresh_token = j.refresh_token; // rotation éventuelle
+      if (persist) persist({ access_token: data.access_token, token_expiry: data.token_expiry, refresh_token: data.refresh_token });
+      return data.access_token;
+    }
+
+    async function api(method, path, opts = {}) {
+      const token = await ensureToken();
+      const headers = { 'x-api-key': data.keystring, Authorization: `Bearer ${token}` };
+      let body;
+      if (opts.form) {
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+        const p = new URLSearchParams();
+        for (const [k, v] of Object.entries(opts.form)) {
+          if (v === undefined || v === null) continue;
+          if (Array.isArray(v)) v.forEach((x) => p.append(k, String(x)));
+          else p.append(k, String(v));
+        }
+        body = p.toString();
+      } else if (opts.json) {
+        headers['Content-Type'] = 'application/json';
+        body = JSON.stringify(opts.json);
+      } else if (opts.rawBody !== undefined) {
+        body = opts.rawBody;
+      }
+      return doFetch(`${API}${path}`, { method, headers, body }, 120000);
+    }
+
+    return [
+      {
+        name: 'etsy_create_listing',
+        description: "Crée une annonce sur ta boutique Etsy : crée le brouillon → ajoute les images (depuis leurs URLs) → publie. Fournis au moins un image_url pour pouvoir publier. Pour un produit physique, shipping_profile_id et return_policy_id sont pris du credential.",
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Titre (max 140 caractères)' },
+            description: { type: 'string', description: 'Description de l\'annonce' },
+            price: { type: 'number', description: 'Prix, ex : 15.90' },
+            quantity: { type: 'number', description: 'Stock (défaut 1 ; 999 conseillé pour un digital)' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Jusqu\'à 13 tags' },
+            materials: { type: 'array', items: { type: 'string' } },
+            taxonomy_id: { type: 'number', description: 'Catégorie Etsy. Si vide, la catégorie par défaut du credential est utilisée. Pour trouver un id : etsy_request GET /application/seller-taxonomy/nodes.' },
+            type: { type: 'string', enum: ['physical', 'download'], description: 'physical (défaut) ou download (produit numérique)' },
+            who_made: { type: 'string', enum: ['i_did', 'someone_else', 'collective'], description: 'défaut i_did' },
+            when_made: { type: 'string', description: 'ex : made_to_order (défaut), 2020_2025…' },
+            image_urls: { type: 'array', items: { type: 'string' }, description: 'URLs des images à uploader (max 10). Au moins 1 pour publier.' },
+            state: { type: 'string', enum: ['active', 'draft'], description: 'active = publie (défaut), draft = brouillon' }
+          },
+          required: ['title', 'description', 'price']
+        },
+        run: async (args) => {
+          try {
+            if (!data.shop_id) return 'ERREUR : shop_id manquant dans le credential Etsy.';
+            const type = args.type || 'physical';
+            const taxonomy = args.taxonomy_id || data.default_taxonomy_id;
+            if (!taxonomy) return 'ERREUR : aucune catégorie (taxonomy_id) fournie ni par défaut. Cherche-la via etsy_request GET /application/seller-taxonomy/nodes, ou renseigne une catégorie par défaut dans le credential.';
+            const form = {
+              quantity: args.quantity || (type === 'download' ? 999 : 1),
+              title: String(args.title).slice(0, 140),
+              description: args.description,
+              price: args.price,
+              who_made: args.who_made || 'i_did',
+              when_made: args.when_made || 'made_to_order',
+              taxonomy_id: taxonomy,
+              type,
+              tags: (args.tags || []).slice(0, 13),
+              materials: (args.materials || []).slice(0, 13)
+            };
+            if (type === 'physical') {
+              if (!data.shipping_profile_id) return "ERREUR : produit physique sans shipping_profile_id. Renseigne-le dans le credential Etsy (crée un profil d'expédition dans ta boutique), ou utilise type=download pour un produit numérique.";
+              form.shipping_profile_id = data.shipping_profile_id;
+              if (data.return_policy_id) form.return_policy_id = data.return_policy_id;
+            }
+            // 1) Créer le brouillon
+            const cr = await api('POST', `/application/shops/${data.shop_id}/listings`, { form });
+            let listing; try { listing = JSON.parse(cr.text); } catch { listing = {}; }
+            if (!listing.listing_id) return `ERREUR création de l'annonce (HTTP ${cr.status}) : ${cr.text.slice(0, 400)}`;
+            const listingId = listing.listing_id;
+            const report = [`Brouillon créé (listing_id=${listingId}).`];
+
+            // 2) Uploader les images depuis leurs URLs
+            const urls = (args.image_urls || []).slice(0, 10);
+            let uploaded = 0;
+            for (const u of urls) {
+              try {
+                const imgR = await fetch(u);
+                if (!imgR.ok) { report.push(`Image ignorée (téléchargement HTTP ${imgR.status}) : ${u}`); continue; }
+                const buf = Buffer.from(await imgR.arrayBuffer());
+                const fd = new FormData();
+                fd.append('image', new Blob([buf]), 'image.png');
+                const token = await ensureToken();
+                const up = await fetch(`${API}/application/shops/${data.shop_id}/listings/${listingId}/images`, {
+                  method: 'POST',
+                  headers: { 'x-api-key': data.keystring, Authorization: `Bearer ${token}` },
+                  body: fd
+                });
+                if (up.ok) uploaded++;
+                else report.push(`Échec upload image (HTTP ${up.status}) : ${(await up.text()).slice(0, 150)}`);
+              } catch (e) { report.push(`Erreur image ${u} : ${e.message}`); }
+            }
+            report.push(`${uploaded}/${urls.length} image(s) uploadée(s).`);
+
+            // 3) Publier (active) si demandé et si au moins une image
+            const wantActive = (args.state || 'active') === 'active';
+            if (wantActive) {
+              if (uploaded === 0) {
+                report.push("⚠️ Publication impossible sans image : l'annonce reste en BROUILLON.");
+              } else {
+                const act = await api('PATCH', `/application/shops/${data.shop_id}/listings/${listingId}`, { form: { state: 'active' } });
+                if (act.status >= 200 && act.status < 300) report.push('✅ Annonce PUBLIÉE (active).');
+                else report.push(`Activation échouée (HTTP ${act.status}) : ${act.text.slice(0, 200)} — l'annonce reste en brouillon.`);
+              }
+            } else {
+              report.push('Laissée en BROUILLON (state=draft).');
+            }
+            report.push(`URL : https://www.etsy.com/listing/${listingId}`);
+            return report.join('\n');
+          } catch (e) {
+            return `ERREUR Etsy : ${e.message}`;
+          }
+        }
+      },
+      {
+        name: 'etsy_request',
+        description: "Appel authentifié générique à l'API Etsy v3 (chercher une catégorie/taxonomy, lister tes shipping profiles, infos boutique…). Base : https://api.etsy.com/v3. Ex : GET /application/shops/{shop_id} · GET /application/seller-taxonomy/nodes",
+        parameters: HTTP_PARAMS,
+        run: async (args) => {
+          try {
+            const opts = {};
+            if (args.body !== undefined && args.body !== null && args.method !== 'GET') {
+              if (typeof args.body === 'object') opts.json = args.body;
+              else opts.rawBody = String(args.body);
+            }
+            let path = args.path.startsWith('/') ? args.path : '/' + args.path;
+            if (args.query && Object.keys(args.query).length) {
+              path += (path.includes('?') ? '&' : '?') + new URLSearchParams(args.query).toString();
+            }
+            const r = await api(args.method, path, opts);
+            return trunc(`HTTP ${r.status}\n${r.text}`);
+          } catch (e) { return `ERREUR Etsy : ${e.message}`; }
+        }
+      }
+    ];
+  }
+});
 
 /* ------------------------------------------------------------------ */
 
