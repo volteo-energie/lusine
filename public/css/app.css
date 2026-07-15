@@ -712,6 +712,10 @@ input[type=range] { flex: 1; accent-color: var(--primary); }
   font-weight: 500; letter-spacing: .04em; vertical-align: middle; }
 .src-tag.cron { color: var(--orange); background: rgba(255, 177, 94, .13); }
 .src-tag.hook { color: var(--blue); background: var(--blue-dim); }
+.src-tag.sim { color: var(--blue); background: var(--blue-dim); border: 1px dashed rgba(124, 140, 255, .4); }
+
+.badge.status-partial { color: var(--orange); border-color: rgba(255, 177, 94, .35); background: rgba(255, 177, 94, .1); }
+.exec-cost { font-size: 11px; color: var(--muted-2); letter-spacing: .02em; white-space: nowrap; }
 
 .trig-add { display: flex; gap: 8px; margin: 4px 2px 6px; }
 .trig-add .btn { flex: 1; justify-content: center; }
