@@ -191,6 +191,58 @@ function topoSort(nodes, connections) {
   return order;
 }
 
+/* ---------- Aiguillage : l'agent choisit lui-même la branche suivante ---------- */
+async function chooseRoute({ node, output, candidates, userId }) {
+  const cfg = node.config || {};
+  const provider = getProvider(cfg.providerId, userId);
+  const model = cfg.model || provider?.default_model;
+  if (!provider || !model) return candidates.map(c => c.id); // pas de quoi décider → tout activer
+  const list = candidates.map((c, i) =>
+    `${i + 1}. ${c.name}${c.config?.mission ? ` — ${String(c.config.mission).slice(0, 250)}` : ''}`).join('\n');
+  const system = `Tu es un aiguilleur dans une chaîne d'agents. D'après le résultat fourni, choisis LE SEUL agent suivant qui doit traiter la suite.${cfg.routeHint ? `\nCritère de choix : ${cfg.routeHint}` : ''}\nRéponds UNIQUEMENT par le numéro de l'agent choisi (ex : 2). Aucun autre texte.`;
+  const messages = [{ role: 'user', content: `Agents disponibles :\n${list}\n\nRésultat à aiguiller :\n${trunc(output, 4000)}\n\nNuméro de l'agent choisi :` }];
+  try {
+    const r = await callLLM(provider, { model, system, messages, tools: [], temperature: 0 });
+    const m = String(r.text || '').match(/\d+/);
+    const idx = m ? Number(m[0]) - 1 : -1;
+    if (idx >= 0 && idx < candidates.length) return [candidates[idx].id];
+  } catch (_) { /* en cas d'échec, on ne bloque pas la chaîne */ }
+  return [candidates[0].id];
+}
+
+/* ---------- Retry ---------- */
+async function runWithRetry(fn, { retries = 0, delayMs = 3000, onRetry }) {
+  let last;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try { return await fn(); }
+    catch (e) {
+      if (e.message === '__STOPPED__') throw e;
+      last = e;
+      if (attempt < retries) {
+        if (onRetry) onRetry(attempt + 1, e);
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw last;
+}
+
+/* ---------- Notification d'échec (webhook Discord / Slack / générique) ---------- */
+async function notifyFailure(url, payload) {
+  if (!url) return;
+  const text = `🔴 L'usine — échec de la chaîne « ${payload.workflow} »\nAgent : ${payload.node || '—'}\nErreur : ${payload.error}`;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: text, text, ...payload }), // content=Discord, text=Slack, reste=générique
+      signal: ctrl.signal
+    }).finally(() => clearTimeout(t));
+  } catch (_) { /* la notification ne doit jamais casser l'exécution */ }
+}
+
 async function runWorkflow({ workflowId, input, broadcast, source, userId }) {
   const wf = userId
     ? db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(workflowId, userId)
@@ -219,24 +271,41 @@ async function runWorkflow({ workflowId, input, broadcast, source, userId }) {
   (async () => {
     const outputs = new Map();
     let status = 'success';
+    let failedNode = null, failedError = null;
     try {
       const order = topoSort(nodes, connections);
       const byId = new Map(nodes.map(n => [n.id, n]));
+      const activeIn = new Map();   // nodeId → Set des prédécesseurs dont la branche est active
+
       for (const nodeId of order) {
         const node = byId.get(nodeId);
-        const preds = connections.filter(c => c.to === nodeId).map(c => c.from);
+        const cfg = node.config || {};
+        const inConns = connections.filter(c => c.to === nodeId);
+        const live = [...(activeIn.get(nodeId) || [])];
+
+        // Branche non retenue par un aiguilleur → l'agent est ignoré
+        if (inConns.length && !live.length) {
+          logs.push({ nodeId, name: node.name, status: 'skipped', reason: 'branche non retenue' });
+          broadcast({ type: 'node:skipped', execId, nodeId });
+          saveLogs('running');
+          continue;
+        }
+
         let nodeInput;
-        if (!preds.length) nodeInput = input || '';
-        else if (preds.length === 1) nodeInput = outputs.get(preds[0]) || '';
-        else nodeInput = preds.map(p => `### Résultat de « ${byId.get(p)?.name || p} » :\n${outputs.get(p) || ''}`).join('\n\n');
+        if (!inConns.length) nodeInput = input || '';
+        else if (live.length === 1) nodeInput = outputs.get(live[0]) || '';
+        else nodeInput = live.map(p => `### Résultat de « ${byId.get(p)?.name || p} » :\n${outputs.get(p) || ''}`).join('\n\n');
 
         const log = { nodeId, name: node.name, status: 'running', startedAt: new Date().toISOString(), steps: [], output: null };
         logs.push(log);
         broadcast({ type: 'node:start', execId, nodeId, name: node.name });
         saveLogs('running');
 
+        const retries = Math.min(Math.max(Number(cfg.retries) || 0, 0), 5);
+        const retryDelay = Math.max(Number(cfg.retryDelay) || 3, 1) * 1000;
+
         try {
-          const output = await runAgent({
+          const output = await runWithRetry(() => runAgent({
             node,
             input: nodeInput,
             userId: ownerId,
@@ -245,12 +314,38 @@ async function runWorkflow({ workflowId, input, broadcast, source, userId }) {
               log.steps.push(step);
               broadcast({ type: 'node:step', execId, nodeId, step });
             }
+          }), {
+            retries, delayMs: retryDelay,
+            onRetry: (n, e) => {
+              const step = { type: 'llm', text: `⚠️ Échec (${e.message}) — nouvelle tentative ${n}/${retries} dans ${retryDelay / 1000}s…` };
+              log.steps.push(step);
+              broadcast({ type: 'node:step', execId, nodeId, step });
+              saveLogs('running');
+            }
           });
           log.status = 'success';
           log.output = output;
           log.finishedAt = new Date().toISOString();
           outputs.set(nodeId, output);
           broadcast({ type: 'node:done', execId, nodeId, output: trunc(output, 2000) });
+
+          // Quelles branches de sortie activer ?
+          const outConns = connections.filter(c => c.from === nodeId);
+          let chosen = outConns;
+          if (cfg.isRouter && outConns.length > 1) {
+            const candidates = outConns.map(c => byId.get(c.to)).filter(Boolean);
+            const picked = await chooseRoute({ node, output, candidates, userId: ownerId });
+            chosen = outConns.filter(c => picked.includes(c.to));
+            const names = chosen.map(c => byId.get(c.to)?.name).filter(Boolean).join(', ');
+            log.route = names;
+            const step = { type: 'llm', text: `🔀 Aiguillage → ${names || '(aucune branche)'}` };
+            log.steps.push(step);
+            broadcast({ type: 'node:step', execId, nodeId, step });
+          }
+          for (const c of chosen) {
+            if (!activeIn.has(c.to)) activeIn.set(c.to, new Set());
+            activeIn.get(c.to).add(nodeId);
+          }
           saveLogs('running');
         } catch (e) {
           if (e.message === '__STOPPED__') {
@@ -262,23 +357,44 @@ async function runWorkflow({ workflowId, input, broadcast, source, userId }) {
           log.status = 'error';
           log.error = e.message;
           log.finishedAt = new Date().toISOString();
-          status = 'error';
+          failedNode = node.name; failedError = e.message;
           broadcast({ type: 'node:error', execId, nodeId, error: e.message });
+
+          if (cfg.onError === 'continue') {
+            // la chaîne continue : on transmet l'erreur en clair à la suite
+            const msg = `⚠️ L'agent « ${node.name} » a échoué : ${e.message}`;
+            outputs.set(nodeId, msg);
+            status = status === 'success' ? 'partial' : status;
+            for (const c of connections.filter(c => c.from === nodeId)) {
+              if (!activeIn.has(c.to)) activeIn.set(c.to, new Set());
+              activeIn.get(c.to).add(nodeId);
+            }
+            saveLogs('running');
+            continue;
+          }
+          status = 'error';
           break;
         }
       }
-      // marque les nodes jamais lancés
+      // marque les agents jamais lancés
       for (const n of nodes) {
         if (!logs.find(l => l.nodeId === n.id)) logs.push({ nodeId: n.id, name: n.name, status: 'skipped' });
       }
     } catch (e) {
       status = 'error';
+      failedError = e.message;
       logs.push({ nodeId: null, name: 'Chaîne', status: 'error', error: e.message });
       broadcast({ type: 'exec:error', execId, error: e.message });
     } finally {
       saveLogs(status, true);
       running.delete(execId);
       broadcast({ type: 'exec:done', execId, status });
+      if (status === 'error' || status === 'partial') {
+        notifyFailure(data.settings?.notifyWebhookUrl, {
+          workflow: wf.name, node: failedNode, error: failedError || 'inconnue',
+          status, execId, source: source || 'manual', at: new Date().toISOString()
+        });
+      }
     }
   })();
 

@@ -599,3 +599,13 @@ input[type=range] { flex: 1; accent-color: var(--primary); }
 .auth-switch a:hover { text-decoration: underline; }
 .sidebar-user { font-size: 11.5px; color: var(--muted-2); padding: 0 6px 8px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
+
+/* v3.2 — réglages agent (fiabilité / aiguillage) */
+.ndv-sep { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-2);
+  margin: 22px 0 12px; padding-top: 16px; border-top: 1px solid var(--border); font-weight: 600; }
+.two-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.check-row { display: flex; align-items: center; gap: 9px; cursor: pointer; font-weight: 400; }
+.check-row input { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+.node.router::after { content: "🔀"; position: absolute; top: -8px; right: -8px; font-size: 13px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 50%; padding: 2px 3px; }
+.step-route { color: var(--primary); font-weight: 600; }

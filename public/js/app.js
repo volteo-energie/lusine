@@ -829,6 +829,7 @@ async function renderEditor(id) {
           <button id="z-reset" title="Zoom 100%">1:1</button>
         </div>
         <div class="exec-bar">
+          <button class="exec-hist-btn" id="ed-settings">⚙️ Réglages</button>
           <button class="exec-hist-btn" id="ed-triggers">⏰ Déclencheurs</button>
           <button class="exec-hist-btn" id="ed-hist">🕘 Historique</button>
           <button class="exec-btn" id="ed-run">▶ Exécuter la chaîne</button>
@@ -868,17 +869,42 @@ async function renderEditor(id) {
     S.dirty = v;
     $('#ed-dirty').classList.toggle('show', v);
   }
+  const wfSettings = (wf.data && wf.data.settings) || {};
   async function save() {
     try {
       await API.put(`/api/workflows/${wf.id}`, {
         name: $('#ed-title').value.trim() || 'Sans nom',
-        data: cv.getData(),
+        data: { ...cv.getData(), settings: wfSettings },
         active: $('#ed-active').checked
       });
       setDirty(false);
       toast('Workflow enregistré', 'success');
     } catch (e) { toast(e.message, 'error'); }
   }
+
+  /* ---------- réglages de la chaîne ---------- */
+  $('#ed-settings').addEventListener('click', () => {
+    const m = openModal(`
+      <div class="modal" style="max-width:560px">
+        <div class="modal-head"><h3>⚙️ Réglages de la chaîne</h3><button class="sp-close" data-close>✕</button></div>
+        <div class="modal-body">
+          <div class="field"><label>Webhook de notification en cas d'échec</label>
+            <input class="input mono" id="set-notify" value="${esc(wfSettings.notifyWebhookUrl || '')}" placeholder="https://discord.com/api/webhooks/…">
+            <div class="hint">Si la chaîne échoue (surtout la nuit en cron), L'usine envoie un message ici.
+            Compatible Discord, Slack, ou n'importe quelle URL qui accepte du JSON. Laisse vide pour désactiver.</div></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-ghost" data-close>Annuler</button>
+          <button class="btn btn-primary" id="set-save">Enregistrer</button>
+        </div>
+      </div>`);
+    $('#set-save', m.el).addEventListener('click', () => {
+      wfSettings.notifyWebhookUrl = $('#set-notify', m.el).value.trim();
+      setDirty(true);
+      m.close();
+      toast('Réglages appliqués — pense à enregistrer la chaîne', 'success');
+    });
+  });
   $('#ed-save').addEventListener('click', save);
   $('#ed-title').addEventListener('input', () => setDirty(true));
   $('#ed-active').addEventListener('change', () => {
@@ -1173,6 +1199,32 @@ function openNDV(node, cv) {
           <div class="field"><label>Connecteurs de l'agent (ses outils)</label>
             <div id="ndv-creds">${credRows()}</div>
             <button class="btn btn-outline btn-sm" id="ndv-new-cred">＋ Nouvel identifiant</button></div>
+
+          <div class="ndv-sep">Fiabilité</div>
+
+          <div class="two-fields">
+            <div class="field"><label>Réessais si échec</label>
+              <input class="input" type="number" min="0" max="5" id="ndv-retries" value="${cfg.retries ?? 0}"></div>
+            <div class="field"><label>Délai entre essais (s)</label>
+              <input class="input" type="number" min="1" max="120" id="ndv-retry-delay" value="${cfg.retryDelay ?? 3}"></div>
+          </div>
+          <div class="field"><label>Si l'agent échoue quand même</label>
+            <select class="select" id="ndv-onerror">
+              <option value="stop" ${cfg.onError !== 'continue' ? 'selected' : ''}>Arrêter la chaîne (défaut)</option>
+              <option value="continue" ${cfg.onError === 'continue' ? 'selected' : ''}>Continuer sans lui</option>
+            </select>
+            <div class="hint">Utile pour les APIs capricieuses : l'agent retente avant d'abandonner.</div></div>
+
+          <div class="ndv-sep">Aiguillage</div>
+
+          <div class="field">
+            <label class="check-row">
+              <input type="checkbox" id="ndv-router" ${cfg.isRouter ? 'checked' : ''}>
+              <span>Cet agent est un <strong>aiguilleur</strong></span>
+            </label>
+            <div class="hint">S'il a plusieurs agents branchés en sortie, il choisira lui-même lequel doit traiter la suite. Les autres branches seront ignorées.</div></div>
+          <div class="field"><label>Critère de choix (optionnel)</label>
+            <textarea class="textarea" id="ndv-route-hint" style="min-height:56px" placeholder="Ex. : si le lead est chaud → agent commercial ; sinon → agent newsletter.">${esc(cfg.routeHint || '')}</textarea></div>
         </div>
 
         <div class="ndv-output">
@@ -1200,6 +1252,11 @@ function openNDV(node, cv) {
     cfg.temperature = Number($('#ndv-temp', m.el).value);
     cfg.maxIterations = Number($('#ndv-iter', m.el).value) || 8;
     cfg.credentialIds = $$('#ndv-creds input:checked', m.el).map(i => i.dataset.cred);
+    cfg.retries = Math.min(Math.max(Number($('#ndv-retries', m.el).value) || 0, 0), 5);
+    cfg.retryDelay = Math.min(Math.max(Number($('#ndv-retry-delay', m.el).value) || 3, 1), 120);
+    cfg.onError = $('#ndv-onerror', m.el).value;
+    cfg.isRouter = $('#ndv-router', m.el).checked;
+    cfg.routeHint = $('#ndv-route-hint', m.el).value.trim();
   }
 
   m.el.addEventListener('input', () => { $('#ndv-temp-val', m.el).textContent = $('#ndv-temp', m.el).value; });
