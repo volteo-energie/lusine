@@ -30,7 +30,7 @@ cryptoMod.initKey(ENCRYPTION_KEY);
 
 const { encrypt, decrypt, hashPassword, verifyPassword } = cryptoMod;
 const { listTypes } = require('./connectors');
-const { runWorkflow, stopExecution, testAgent, callLLM, reviewExecution } = require('./engine');
+const { runWorkflow, stopExecution, testAgent, callLLM, resolveApproval } = require('./engine');
 const { initScheduler, syncTriggers, fireTrigger, nextRuns } = require('./scheduler');
 const oauth = require('./oauth');
 
@@ -110,9 +110,76 @@ fastify.addHook('onRequest', async (req, reply) => {
   const urlPath = req.url.split('?')[0];
   if (PUBLIC_API.has(urlPath) || urlPath === '/api/ws') return;
   if (urlPath.startsWith('/api/hooks/')) return; // webhooks : sécurisés par leur secret dans l'URL
-  if (urlPath.startsWith('/api/tg/')) return;    // bot Telegram : sécurisé par son secret dans l'URL
+  if (urlPath === '/api/billing/stripe-webhook') return; // sécurisé par la signature HMAC Stripe
   if (/^\/api\/oauth\/[^/]+\/callback$/.test(urlPath)) return; // retour du fournisseur OAuth : identité via le state
   if (!isAuthed(req)) return reply.code(401).send({ error: 'Non authentifié' });
+});
+
+
+/* ---------- Facturation : webhook Stripe → activation automatique des comptes ---------- */
+const STRIPE_WEBHOOK_SECRET = process.env.LUSINE_STRIPE_WEBHOOK_SECRET || '';
+
+function verifyStripeSignature(rawBody, sigHeader, secret) {
+  try {
+    const parts = {};
+    for (const p of String(sigHeader || '').split(',')) {
+      const [k, v] = p.split('=');
+      if (k === 'v1') (parts.v1 = parts.v1 || []).push(v);
+      else parts[k] = v;
+    }
+    if (!parts.t || !parts.v1?.length) return false;
+    if (Math.abs(Date.now() / 1000 - Number(parts.t)) > 300) return false; // anti-rejeu 5 min
+    const expected = crypto.createHmac('sha256', secret).update(`${parts.t}.${rawBody}`).digest('hex');
+    return parts.v1.some(v => {
+      try { return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(v)); } catch { return false; }
+    });
+  } catch { return false; }
+}
+
+fastify.register(async (scope) => {
+  // ce scope garde le corps BRUT (nécessaire pour vérifier la signature Stripe)
+  scope.removeContentTypeParser('application/json');
+  scope.addContentTypeParser('application/json', { parseAs: 'buffer' }, (req, body, done) => done(null, body));
+
+  scope.post('/api/billing/stripe-webhook', async (req, reply) => {
+    if (!STRIPE_WEBHOOK_SECRET) return reply.code(503).send({ error: 'Webhook Stripe non configuré (LUSINE_STRIPE_WEBHOOK_SECRET)' });
+    const raw = req.body; // Buffer
+    if (!verifyStripeSignature(raw, req.headers['stripe-signature'], STRIPE_WEBHOOK_SECRET)) {
+      return reply.code(400).send({ error: 'Signature invalide' });
+    }
+    let event;
+    try { event = JSON.parse(raw.toString('utf8')); } catch { return reply.code(400).send({ error: 'JSON invalide' }); }
+    const obj = event.data?.object || {};
+
+    if (event.type === 'checkout.session.completed') {
+      const email = String(obj.customer_details?.email || obj.customer_email || '').toLowerCase();
+      const customerId = obj.customer || null;
+      const plan = obj.metadata?.plan || null;
+      if (email) {
+        const user = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+        if (user) {
+          db.prepare('UPDATE users SET active = 1, stripe_customer_id = COALESCE(?, stripe_customer_id) WHERE id = ?')
+            .run(customerId, user.id);
+          fastify.log.info(`Stripe : compte ${email} activé`);
+        } else {
+          db.prepare('INSERT INTO pending_activations (email, stripe_customer_id, plan) VALUES (?, ?, ?) ON CONFLICT(email) DO UPDATE SET stripe_customer_id = excluded.stripe_customer_id, plan = excluded.plan')
+            .run(email, customerId, plan);
+          fastify.log.info(`Stripe : activation en attente pour ${email} (compte pas encore créé)`);
+        }
+      }
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      const customerId = obj.customer;
+      if (customerId) {
+        const r = db.prepare('UPDATE users SET active = 0 WHERE stripe_customer_id = ?').run(customerId);
+        if (r.changes) fastify.log.info(`Stripe : abonnement résilié, compte désactivé (customer ${customerId})`);
+        db.prepare('DELETE FROM pending_activations WHERE stripe_customer_id = ?').run(customerId);
+      }
+    }
+
+    return { received: true };
+  });
 });
 
 /* ---------- Bootstrap & Auth ---------- */
@@ -124,7 +191,7 @@ fastify.get('/api/bootstrap', async (req) => {
   const uid = currentUserId(req);
   let email = null;
   if (uid) email = db.prepare('SELECT email FROM users WHERE id = ?').get(uid)?.email || null;
-  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.5.0' };
+  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.6.0' };
 });
 
 fastify.post('/api/auth/register', async (req, reply) => {
@@ -132,9 +199,10 @@ fastify.post('/api/auth/register', async (req, reply) => {
   if (!loginAllowed(ip)) return reply.code(429).send({ error: 'Trop de tentatives, réessaie dans 10 minutes' });
   const { email, password, code } = req.body || {};
   const firstAccount = !db.prepare('SELECT id FROM users LIMIT 1').get();
+  const paid = email ? db.prepare('SELECT * FROM pending_activations WHERE email = ?').get(String(email).toLowerCase()) : null;
 
-  // Le tout premier compte (admin) ne demande pas de code. Ensuite, si un code est configuré, il est requis.
-  if (!firstAccount && SIGNUP_CODE && code !== SIGNUP_CODE) {
+  // Le tout premier compte (admin) ne demande pas de code. Un client qui a déjà payé (Stripe) non plus.
+  if (!firstAccount && !paid && SIGNUP_CODE && code !== SIGNUP_CODE) {
     loginFail(ip);
     return reply.code(403).send({ error: 'Code d\'inscription invalide' });
   }
@@ -144,8 +212,9 @@ fastify.post('/api/auth/register', async (req, reply) => {
   if (exists) return reply.code(409).send({ error: 'Un compte existe déjà avec cet email' });
 
   const id = crypto.randomUUID();
-  db.prepare('INSERT INTO users (id, email, password_hash, active) VALUES (?, ?, ?, 1)')
-    .run(id, email.toLowerCase(), hashPassword(password));
+  db.prepare('INSERT INTO users (id, email, password_hash, active, stripe_customer_id) VALUES (?, ?, ?, 1, ?)')
+    .run(id, email.toLowerCase(), hashPassword(password), paid?.stripe_customer_id || null);
+  if (paid) db.prepare('DELETE FROM pending_activations WHERE email = ?').run(email.toLowerCase());
   attempts.delete(ip);
   setSession(reply, id);
   return { ok: true };
@@ -336,6 +405,27 @@ fastify.delete('/api/credentials/:id', async (req) => {
 });
 
 /* ---------- Workflows ---------- */
+const { listTemplates, getTemplate } = require('./templates');
+
+fastify.get('/api/templates', async () => listTemplates());
+
+fastify.post('/api/workflows/from-template', async (req, reply) => {
+  const uid = currentUserId(req);
+  const t = getTemplate(req.body?.templateId);
+  if (!t) return reply.code(404).send({ error: 'Modèle introuvable' });
+  // assigne automatiquement le premier fournisseur IA de l'utilisateur à tous les agents
+  const prov = db.prepare('SELECT id FROM providers WHERE user_id = ? ORDER BY created_at LIMIT 1').get(uid);
+  const data = JSON.parse(JSON.stringify(t.data));
+  for (const n of data.nodes) {
+    n.config = n.config || {};
+    if (prov) n.config.providerId = prov.id;
+  }
+  const id = crypto.randomUUID();
+  db.prepare('INSERT INTO workflows (id, name, data, user_id) VALUES (?, ?, ?, ?)')
+    .run(id, t.name, JSON.stringify(data), uid);
+  return { id, name: t.name, providerAssigned: !!prov };
+});
+
 fastify.get('/api/workflows', async (req) => {
   const uid = currentUserId(req);
   return db.prepare('SELECT id, name, active, created_at, updated_at FROM workflows WHERE user_id = ? ORDER BY updated_at DESC').all(uid);
@@ -390,10 +480,7 @@ fastify.delete('/api/workflows/:id', async (req) => {
 fastify.post('/api/workflows/:id/run', async (req, reply) => {
   const uid = currentUserId(req);
   try {
-    const execId = await runWorkflow({
-      workflowId: req.params.id, input: req.body?.input || '', broadcast,
-      source: 'manual', userId: uid, dryRun: !!req.body?.dryRun
-    });
+    const execId = await runWorkflow({ workflowId: req.params.id, input: req.body?.input || '', broadcast, source: 'manual', userId: uid });
     return { execId };
   } catch (e) {
     return reply.code(400).send({ error: e.message });
@@ -404,120 +491,11 @@ fastify.get('/api/executions', async (req) => {
   const uid = currentUserId(req);
   const { workflowId } = req.query || {};
   const rows = workflowId
-    ? db.prepare('SELECT id, workflow_id, status, source, started_at, finished_at, dry_run, tokens_in, tokens_out, cost_eur FROM executions WHERE workflow_id = ? AND user_id = ? ORDER BY started_at DESC LIMIT 50').all(workflowId, uid)
-    : db.prepare(`SELECT e.id, e.workflow_id, e.status, e.source, e.started_at, e.finished_at, e.dry_run, e.tokens_in, e.tokens_out, e.cost_eur, w.name as workflow_name
+    ? db.prepare('SELECT id, workflow_id, status, source, started_at, finished_at FROM executions WHERE workflow_id = ? AND user_id = ? ORDER BY started_at DESC LIMIT 50').all(workflowId, uid)
+    : db.prepare(`SELECT e.id, e.workflow_id, e.status, e.source, e.started_at, e.finished_at, w.name as workflow_name
                   FROM executions e LEFT JOIN workflows w ON w.id = e.workflow_id
                   WHERE e.user_id = ? ORDER BY e.started_at DESC LIMIT 100`).all(uid);
   return rows;
-});
-
-/* ---------- Contremaître : audit d'une exécution + missions améliorées ---------- */
-fastify.post('/api/executions/:id/review', async (req, reply) => {
-  const uid = currentUserId(req);
-  try {
-    return await reviewExecution({ execId: req.params.id, userId: uid });
-  } catch (e) {
-    return reply.code(400).send({ error: e.message });
-  }
-});
-
-/* Applique une mission proposée par le contremaître à un agent du workflow */
-fastify.post('/api/workflows/:id/apply-mission', async (req, reply) => {
-  const uid = currentUserId(req);
-  const wf = db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
-  if (!wf) return reply.code(404).send({ error: 'Introuvable' });
-  const { nodeId, mission } = req.body || {};
-  if (!nodeId || typeof mission !== 'string') return reply.code(400).send({ error: 'nodeId et mission requis' });
-  const data = JSON.parse(wf.data);
-  const node = (data.nodes || []).find(n => n.id === nodeId);
-  if (!node) return reply.code(404).send({ error: 'Agent introuvable dans ce workflow' });
-  node.config = node.config || {};
-  node.config.mission = mission;
-  db.prepare(`UPDATE workflows SET data = ?, updated_at = datetime('now') WHERE id = ?`).run(JSON.stringify(data), wf.id);
-  return { ok: true, name: node.name };
-});
-
-/* ---------- Mémoire d'usine ---------- */
-fastify.get('/api/workflows/:id/memories', async (req, reply) => {
-  const uid = currentUserId(req);
-  const wf = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
-  if (!wf) return reply.code(404).send({ error: 'Introuvable' });
-  return db.prepare('SELECT id, key, value, updated_at FROM memories WHERE workflow_id = ? ORDER BY updated_at DESC').all(req.params.id);
-});
-
-fastify.delete('/api/workflows/:id/memories/:memId', async (req, reply) => {
-  const uid = currentUserId(req);
-  const wf = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
-  if (!wf) return reply.code(404).send({ error: 'Introuvable' });
-  if (req.params.memId === 'all') db.prepare('DELETE FROM memories WHERE workflow_id = ?').run(req.params.id);
-  else db.prepare('DELETE FROM memories WHERE id = ? AND workflow_id = ?').run(req.params.memId, req.params.id);
-  return { ok: true };
-});
-
-/* ---------- Export / import d'usines (.usine) ---------- */
-fastify.get('/api/workflows/:id/export', async (req, reply) => {
-  const uid = currentUserId(req);
-  const wf = db.prepare('SELECT * FROM workflows WHERE id = ? AND user_id = ?').get(req.params.id, uid);
-  if (!wf) return reply.code(404).send({ error: 'Introuvable' });
-  const data = JSON.parse(wf.data);
-  const typeById = {};
-  for (const c of db.prepare('SELECT id, type FROM credentials WHERE user_id = ?').all(uid)) typeById[c.id] = c.type;
-  const nodes = (data.nodes || []).map(n => {
-    const cfg = { ...(n.config || {}) };
-    // on retire tout ce qui est personnel : fournisseur, identifiants (on garde les TYPES de connecteurs comme guide)
-    const credTypes = [...new Set((cfg.credentialIds || []).map(id => typeById[id]).filter(Boolean))];
-    delete cfg.providerId;
-    delete cfg.credentialIds;
-    return { ...n, config: { ...cfg, requiresConnectors: credTypes } };
-  });
-  const payload = {
-    format: 'lusine-usine@1',
-    name: wf.name,
-    exportedAt: new Date().toISOString(),
-    data: { nodes, connections: data.connections || [], settings: {} }
-  };
-  reply.header('Content-Disposition', `attachment; filename="${wf.name.replace(/[^\w\-. ]+/g, '_')}.usine.json"`);
-  return payload;
-});
-
-fastify.post('/api/workflows/import', async (req, reply) => {
-  const uid = currentUserId(req);
-  const p = req.body || {};
-  if (p.format !== 'lusine-usine@1' || !p.data || !Array.isArray(p.data.nodes)) {
-    return reply.code(400).send({ error: 'Fichier .usine invalide (format inconnu)' });
-  }
-  // par sécurité on ne garde que les champs attendus
-  const nodes = p.data.nodes.slice(0, 60).map(n => ({
-    id: String(n.id || ('n' + crypto.randomBytes(4).toString('hex'))),
-    type: 'agent',
-    name: String(n.name || 'Agent').slice(0, 120),
-    x: Number(n.x) || 0, y: Number(n.y) || 0,
-    config: {
-      icon: typeof n.config?.icon === 'string' ? n.config.icon.slice(0, 8) : '🤖',
-      color: /^#[0-9a-fA-F]{6}$/.test(n.config?.color || '') ? n.config.color : '#ff6d5a',
-      mission: String(n.config?.mission || '').slice(0, 8000),
-      model: String(n.config?.model || '').slice(0, 120),
-      temperature: Number(n.config?.temperature ?? 0.7),
-      maxIterations: Number(n.config?.maxIterations) || 8,
-      retries: Number(n.config?.retries) || 0,
-      retryDelay: Number(n.config?.retryDelay) || 3,
-      onError: n.config?.onError === 'continue' ? 'continue' : 'stop',
-      loop: n.config?.loop === 'foreach' ? 'foreach' : '',
-      loopMaxItems: Number(n.config?.loopMaxItems) || 10,
-      loopSplitHint: String(n.config?.loopSplitHint || '').slice(0, 300),
-      isRouter: !!n.config?.isRouter,
-      routeHint: String(n.config?.routeHint || '').slice(0, 1000),
-      requiresConnectors: Array.isArray(n.config?.requiresConnectors) ? n.config.requiresConnectors.slice(0, 12) : [],
-      providerId: '', credentialIds: []
-    }
-  }));
-  const ids = new Set(nodes.map(n => n.id));
-  const connections = (p.data.connections || []).filter(c => ids.has(c.from) && ids.has(c.to)).map(c => ({ from: c.from, to: c.to }));
-  const id = crypto.randomUUID();
-  const name = String(p.name || 'Usine importée').slice(0, 160);
-  db.prepare('INSERT INTO workflows (id, name, data, user_id) VALUES (?, ?, ?, ?)')
-    .run(id, name, JSON.stringify({ nodes, connections, settings: {} }), uid);
-  return { id, name };
 });
 
 fastify.get('/api/executions/:id', async (req, reply) => {
@@ -525,6 +503,18 @@ fastify.get('/api/executions/:id', async (req, reply) => {
   const e = db.prepare('SELECT * FROM executions WHERE id = ? AND user_id = ?').get(req.params.id, uid);
   if (!e) return reply.code(404).send({ error: 'Introuvable' });
   return { ...e, logs: JSON.parse(e.logs || '[]') };
+});
+
+
+fastify.post('/api/executions/:id/approve', async (req, reply) => {
+  const uid = currentUserId(req);
+  const e = db.prepare('SELECT id FROM executions WHERE id = ? AND user_id = ?').get(req.params.id, uid);
+  if (!e) return reply.code(404).send({ error: 'Introuvable' });
+  const { nodeId, decision, comment } = req.body || {};
+  if (!nodeId || !['approve', 'reject'].includes(decision)) return reply.code(400).send({ error: 'nodeId et decision (approve|reject) requis' });
+  const ok = resolveApproval(req.params.id, nodeId, decision, (comment || '').slice(0, 500));
+  if (!ok) return reply.code(409).send({ error: 'Cette validation n\'est plus en attente (expirée, déjà traitée, ou serveur redémarré entre-temps — relance la chaîne).' });
+  return { ok: true };
 });
 
 fastify.post('/api/executions/:id/stop', async (req) => {
@@ -545,107 +535,6 @@ fastify.post('/api/agents/test', async (req, reply) => {
   } catch (e) {
     return reply.code(400).send({ error: e.message });
   }
-});
-
-/* ---------- Chef d'atelier Telegram ---------- */
-function tgApi(token, method, payload) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 10000);
-  return fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload || {}), signal: ctrl.signal
-  }).then(r => r.json()).finally(() => clearTimeout(t));
-}
-function tgCredToken(credId, uid) {
-  const row = db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?').get(credId, uid);
-  if (!row || row.type !== 'telegram') return null;
-  try { return JSON.parse(decrypt(row.data_enc)).botToken || null; } catch { return null; }
-}
-
-fastify.get('/api/telegram/links', async (req) => {
-  const uid = currentUserId(req);
-  return db.prepare('SELECT id, credential_id, chat_id, enabled, created_at FROM tg_links WHERE user_id = ?').all(uid);
-});
-
-fastify.post('/api/telegram/links', async (req, reply) => {
-  const uid = currentUserId(req);
-  const { credentialId } = req.body || {};
-  const token = tgCredToken(credentialId, uid);
-  if (!token) return reply.code(400).send({ error: 'Identifiant Telegram introuvable (le connecteur doit être de type Telegram avec un token de bot)' });
-  const base = (process.env.LUSINE_PUBLIC_URL || '').replace(/\/+$/, '');
-  if (!base) return reply.code(400).send({ error: 'LUSINE_PUBLIC_URL manquant côté serveur : impossible d\'enregistrer le webhook du bot' });
-
-  const existing = db.prepare('SELECT * FROM tg_links WHERE credential_id = ? AND user_id = ?').get(credentialId, uid);
-  const id = existing?.id || crypto.randomUUID();
-  const secret = existing?.secret || crypto.randomBytes(18).toString('hex');
-  const hookUrl = `${base}/api/tg/${id}/${secret}`;
-  const r = await tgApi(token, 'setWebhook', { url: hookUrl, allowed_updates: ['message'] });
-  if (!r.ok) return reply.code(400).send({ error: `Telegram a refusé le webhook : ${r.description || 'erreur inconnue'}` });
-  if (existing) db.prepare('UPDATE tg_links SET enabled = 1 WHERE id = ?').run(id);
-  else db.prepare('INSERT INTO tg_links (id, user_id, credential_id, secret, enabled) VALUES (?, ?, ?, ?, 1)').run(id, uid, credentialId, secret);
-  return { ok: true, id, pending: true, hint: 'Envoie n\'importe quel message à ton bot pour le jumeler.' };
-});
-
-fastify.delete('/api/telegram/links/:id', async (req) => {
-  const uid = currentUserId(req);
-  const link = db.prepare('SELECT * FROM tg_links WHERE id = ? AND user_id = ?').get(req.params.id, uid);
-  if (link) {
-    const token = tgCredToken(link.credential_id, uid);
-    if (token) { try { await tgApi(token, 'deleteWebhook', {}); } catch (_) {} }
-    db.prepare('DELETE FROM tg_links WHERE id = ?').run(link.id);
-  }
-  return { ok: true };
-});
-
-/* Webhook entrant du bot (public, sécurisé par le secret d'URL) */
-fastify.post('/api/tg/:id/:secret', async (req, reply) => {
-  const link = db.prepare('SELECT * FROM tg_links WHERE id = ?').get(req.params.id);
-  if (!link || link.secret !== req.params.secret || !link.enabled) return reply.code(404).send({ ok: false });
-  const token = tgCredToken(link.credential_id, link.user_id);
-  if (!token) return reply.send({ ok: true });
-
-  const msg = req.body?.message;
-  const chatId = msg?.chat?.id != null ? String(msg.chat.id) : null;
-  const text = String(msg?.text || '').trim();
-  if (!chatId || !text) return reply.send({ ok: true });
-
-  const say = (t) => tgApi(token, 'sendMessage', { chat_id: chatId, text: t }).catch(() => {});
-
-  // Jumelage : le premier chat qui écrit devient le chef d'atelier
-  if (!link.chat_id) {
-    db.prepare('UPDATE tg_links SET chat_id = ? WHERE id = ?').run(chatId, link.id);
-    await say('🏭 Chef d\'atelier connecté à L\'usine.\n\nCommandes :\n• usines — liste tes chaînes\n• lance N [donnée d\'entrée] — exécute la chaîne N\n• simule N [donnée] — répétition générale (rien de réel)\n• statut — exécutions en cours et récentes\n• aide — cette aide');
-    return reply.send({ ok: true });
-  }
-  if (link.chat_id !== chatId) return reply.send({ ok: true }); // seul le chat jumelé commande
-
-  const uid = link.user_id;
-  const wfs = db.prepare('SELECT id, name, active FROM workflows WHERE user_id = ? ORDER BY created_at').all(uid);
-  const lower = text.toLowerCase();
-
-  try {
-    if (lower === 'usines' || lower === '/usines' || lower === 'list') {
-      if (!wfs.length) { await say('Aucune chaîne pour l\'instant.'); return reply.send({ ok: true }); }
-      await say('🏭 Tes usines :\n' + wfs.map((w, i) => `${i + 1}. ${w.name}${w.active ? ' ✅' : ''}`).join('\n') + '\n\n« lance N » pour exécuter, « simule N » pour une répétition.');
-    } else if (/^(lance|simule)\s+\d+/.test(lower)) {
-      const m = text.match(/^(\S+)\s+(\d+)\s*([\s\S]*)$/);
-      const idx = Number(m[2]) - 1;
-      const dry = m[1].toLowerCase() === 'simule';
-      if (!wfs[idx]) { await say(`Pas de chaîne n° ${m[2]} — envoie « usines » pour la liste.`); return reply.send({ ok: true }); }
-      await runWorkflow({ workflowId: wfs[idx].id, input: m[3] || '', broadcast, source: 'telegram', userId: uid, dryRun: dry });
-      await say(`${dry ? '🧪 Répétition générale' : '▶️ Exécution'} de « ${wfs[idx].name} » lancée. Je te fais un rapport si la chaîne a le rapport Telegram activé (Réglages de la chaîne).`);
-    } else if (lower === 'statut' || lower === '/statut') {
-      const recent = db.prepare(`SELECT e.status, e.dry_run, e.started_at, e.cost_eur, w.name FROM executions e LEFT JOIN workflows w ON w.id = e.workflow_id WHERE e.user_id = ? ORDER BY e.started_at DESC LIMIT 5`).all(uid);
-      const runningCount = recent.filter(r => r.status === 'running').length;
-      const fmt = (r) => `${{ success: '✅', error: '🔴', running: '⏳', stopped: '⏹', partial: '🟠' }[r.status] || '•'} ${r.name || '?'}${r.dry_run ? ' (sim)' : ''} — ${r.started_at}${r.cost_eur != null ? ` · ~${r.cost_eur.toFixed(2)} €` : ''}`;
-      await say(`En cours : ${runningCount}\n\nDernières exécutions :\n${recent.map(fmt).join('\n') || '(aucune)'}`);
-    } else {
-      await say('Commandes : usines · lance N [entrée] · simule N [entrée] · statut');
-    }
-  } catch (e) {
-    await say(`⚠️ ${e.message}`);
-  }
-  return reply.send({ ok: true });
 });
 
 /* ---------- Déclencheurs (triggers) ---------- */
@@ -768,6 +657,9 @@ fastify.setNotFoundHandler((req, reply) => {
 
 fastify.listen({ port: PORT, host: HOST }).then(() => {
   console.log(`\n  🏭  L'usine tourne sur http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+
+/* Les exécutions interrompues par un redémarrage ne peuvent pas reprendre */
+db.prepare("UPDATE executions SET status = 'error', finished_at = datetime('now') WHERE status IN ('running','waiting')").run();
   initScheduler({ runWorkflow, broadcast });
   console.log('');
 }).catch((e) => { console.error(e); process.exit(1); });

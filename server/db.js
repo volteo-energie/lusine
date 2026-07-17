@@ -83,33 +83,14 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_wf_user ON workflows(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_exec_user ON executions(user_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_trig_user ON triggers(user_id)');
 
-/* ---------- Migration v3.5 : coût, simulation, mémoire, chef d'atelier ---------- */
-try { db.exec("ALTER TABLE executions ADD COLUMN dry_run INTEGER DEFAULT 0"); } catch (_) {}
-try { db.exec("ALTER TABLE executions ADD COLUMN tokens_in INTEGER DEFAULT 0"); } catch (_) {}
-try { db.exec("ALTER TABLE executions ADD COLUMN tokens_out INTEGER DEFAULT 0"); } catch (_) {}
-try { db.exec("ALTER TABLE executions ADD COLUMN cost_eur REAL"); } catch (_) {}
-db.exec(`
-CREATE TABLE IF NOT EXISTS memories (
-  id TEXT PRIMARY KEY,
-  workflow_id TEXT NOT NULL,
-  user_id TEXT,
-  key TEXT NOT NULL,
-  value TEXT NOT NULL DEFAULT '',
-  updated_at TEXT DEFAULT (datetime('now')),
-  UNIQUE(workflow_id, key)
-);
-CREATE INDEX IF NOT EXISTS idx_mem_wf ON memories(workflow_id);
-CREATE TABLE IF NOT EXISTS tg_links (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  credential_id TEXT NOT NULL,
-  secret TEXT NOT NULL,
-  chat_id TEXT,
-  enabled INTEGER DEFAULT 1,
+/* ---------- Facturation Stripe (v3.5) ---------- */
+try { db.exec("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT"); } catch (_) {}
+db.exec(`CREATE TABLE IF NOT EXISTS pending_activations (
+  email TEXT PRIMARY KEY,
+  stripe_customer_id TEXT,
+  plan TEXT,
   created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_tg_user ON tg_links(user_id);
-`);
+)`);
 
 // Rattache l'utilisateur historique (mono-tenant) et toutes ses données à son compte
 const legacyUser = db.prepare('SELECT id, email FROM users ORDER BY created_at LIMIT 1').get();

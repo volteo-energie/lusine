@@ -25,12 +25,6 @@ const LCanvas = (() => {
     container.innerHTML = `
       <div class="canvas">
         <svg xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="molten-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#ff6d5a"/>
-              <stop offset="100%" stop-color="#ffa24b"/>
-            </linearGradient>
-          </defs>
           <g class="conn-group"></g>
           <g class="temp-group"></g>
         </svg>
@@ -105,13 +99,13 @@ const LCanvas = (() => {
         const color = n.config?.color || '#ff6d5a';
         return `<div class="node ${st} ${sel ? 'selected' : ''}" data-id="${n.id}" style="left:${n.x}px; top:${n.y}px">
           <div class="node-actions">
-            <button class="act-open" title="Configurer & tester">${icon('sliders')}</button>
-            <button class="act-dup" title="Dupliquer">${icon('copy')}</button>
-            <button class="act-del del" title="Supprimer">${icon('trash')}</button>
+            <button class="act-open" title="Configurer & tester">⚙</button>
+            <button class="act-dup" title="Dupliquer">⧉</button>
+            <button class="act-del del" title="Supprimer">🗑</button>
           </div>
           <div class="node-box">
-            <div class="node-ico" style="background:${color}26;color:${color}">${emojiIcon(n.config?.icon)}</div>
-            <div class="node-badge ok">${icon('check')}</div>
+            <div class="node-ico" style="background:${color}26">${esc(n.config?.icon || '🤖')}</div>
+            <div class="node-badge ok">✓</div>
             <div class="node-badge err">!</div>
             <div class="node-badge run"><span class="spinner"></span></div>
             <div class="handle handle-in" data-id="${n.id}"></div>
@@ -154,7 +148,7 @@ const LCanvas = (() => {
     }
 
     /* ---------- événements ---------- */
-    canvasEl.addEventListener('mousedown', (e) => {
+    canvasEl.addEventListener('pointerdown', (e) => {
       const handleOut = e.target.closest('.handle-out');
       const handleIn = e.target.closest('.handle-in');
       const action = e.target.closest('.node-actions button');
@@ -200,7 +194,7 @@ const LCanvas = (() => {
       select(null);
     });
 
-    document.addEventListener('mousemove', (e) => {
+    document.addEventListener('pointermove', (e) => {
       if (state.pan) {
         state.vp.x = state.pan.vx + (e.clientX - state.pan.sx);
         state.vp.y = state.pan.vy + (e.clientY - state.pan.sy);
@@ -221,7 +215,13 @@ const LCanvas = (() => {
       }
     });
 
-    document.addEventListener('mouseup', (e) => {
+    document.addEventListener('pointercancel', () => {
+      if (state.pan) { state.pan = null; canvasEl.classList.remove('panning'); }
+      if (state.drag) { state.drag = null; }
+      if (state.link) { state.link = null; tempGroup.innerHTML = ''; }
+    });
+
+    document.addEventListener('pointerup', (e) => {
       if (state.pan) { state.pan = null; canvasEl.classList.remove('panning'); }
       if (state.drag) {
         if (!state.drag.moved) select({ type: 'node', id: state.drag.node.id });
