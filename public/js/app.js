@@ -95,6 +95,23 @@ function duration(a, b) {
 
 const STATUS_FR = { success: 'Succès', error: 'Erreur', running: 'En cours', stopped: 'Arrêté', waiting: 'En attente de validation', waiting_approval: 'Attend ta validation', rejected: 'Rejeté', skipped: 'Ignoré', partial: 'Partiel' };
 
+/* ---------- Coût / tokens ---------- */
+function fmtEuro(v) {
+  if (v === null || v === undefined) return '';
+  return v < 0.01 ? '< 0,01 €' : `≈ ${v.toFixed(2).replace('.', ',')} €`;
+}
+function fmtTokens(n) {
+  if (!n) return '0 tok';
+  return n >= 1000 ? `${(n / 1000).toFixed(1).replace('.', ',')}k tok` : `${n} tok`;
+}
+function costLine(e) {
+  const tok = (e.tokens_in || 0) + (e.tokens_out || 0);
+  if (!tok) return '';
+  const eur = e.cost_eur !== null && e.cost_eur !== undefined ? ` · ${fmtEuro(e.cost_eur)}` : '';
+  return `${fmtTokens(tok)}${eur}`;
+}
+const SIM_TAG = '<span class="src-tag sim">simulation</span>';
+
 /* ================================================================
    ROUTER
    ================================================================ */
@@ -243,6 +260,7 @@ async function renderHome() {
         <div class="dropdown">
           <button data-act="rename">✏️ Renommer</button>
           <button data-act="dup">⧉ Dupliquer</button>
+          <button data-act="export">📤 Exporter (.usine)</button>
           <button data-act="del" class="danger">🗑 Supprimer</button>
         </div>
       </div>
@@ -252,8 +270,10 @@ async function renderHome() {
     <div class="page-head">
       <div><h1>Workflows</h1><div class="sub">Tes chaînes d'agents IA autonomes</div></div>
       <div style="display:flex;gap:10px">
+        <button class="btn btn-outline" id="import-wf">📥 Importer</button>
         <button class="btn btn-outline" id="tpl-wf">📦 Partir d'un modèle</button>
         <button class="btn btn-primary" id="new-wf">＋ Créer un workflow</button>
+        <input type="file" id="import-file" accept=".json,.usine,application/json" style="display:none">
       </div>
     </div>
     ${wfs.length ? `<div class="wf-list">${rows}</div>` : `
@@ -273,6 +293,22 @@ async function renderHome() {
   };
   $('#new-wf')?.addEventListener('click', createWf);
   $('#new-wf-2')?.addEventListener('click', createWf);
+
+  /* import d'un fichier .usine */
+  $('#import-wf')?.addEventListener('click', () => $('#import-file').click());
+  $('#import-file')?.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      const r = await API.post('/api/workflows/import', payload);
+      toast(`Usine « ${r.name} » importée — branche tes fournisseurs et connecteurs`, 'success');
+      location.hash = `#/workflow/${r.id}`;
+    } catch (err) {
+      toast(err.message.includes('JSON') ? 'Fichier illisible : ce n\'est pas un export .usine' : err.message, 'error');
+    }
+    e.target.value = '';
+  });
   $('#tpl-wf')?.addEventListener('click', openTemplatePicker);
   $('#tpl-wf-2')?.addEventListener('click', openTemplatePicker);
 
@@ -299,6 +335,13 @@ async function renderHome() {
       } else if (act === 'dup') {
         await API.post(`/api/workflows/${id}/duplicate`);
         renderHome();
+      } else if (act === 'export') {
+        const a = document.createElement('a');
+        a.href = `/api/workflows/${id}/export`;
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       } else if (act === 'del') {
         if (await confirmDialog(`Supprimer « ${wf.name} » et tout son historique d'exécutions ?`)) {
           await API.del(`/api/workflows/${id}`);
@@ -461,9 +504,12 @@ async function loadTypesAndCreds() {
 
 async function renderCredentials() {
   await loadTypesAndCreds();
+  let tgLinks = [];
+  try { tgLinks = await API.get('/api/telegram/links'); } catch {}
   const typeById = Object.fromEntries(S.types.map(t => [t.id, t]));
   const cards = S.credentials.map(c => {
     const t = typeById[c.type] || { icon: '🔌', name: c.type };
+    const link = c.type === 'telegram' ? tgLinks.find(l => l.credential_id === c.id && l.enabled) : null;
     return `
     <div class="card">
       <div class="card-head">
@@ -471,7 +517,11 @@ async function renderCredentials() {
         <div><div class="card-title">${esc(c.name)}</div>
         <div class="card-sub">${esc(t.name)} · créé le ${fmtDate(c.created_at)}</div></div>
       </div>
+      ${link ? `<div class="card-sub" style="margin-bottom:4px">✅ Chef d'atelier actif${link.chat_id ? '' : ' — envoie un message au bot pour le jumeler'}</div>` : ''}
       <div class="card-actions">
+        ${c.type === 'telegram' ? (link
+          ? `<button class="btn btn-outline btn-sm" data-act="tg-off" data-id="${c.id}" data-link="${link.id}">Couper le chef d'atelier</button>`
+          : `<button class="btn btn-primary btn-sm" data-act="tg-on" data-id="${c.id}">🔗 Chef d'atelier</button>`) : ''}
         <button class="btn btn-outline btn-sm" data-act="edit" data-id="${c.id}">Modifier</button>
         <button class="btn btn-danger btn-sm" data-act="del" data-id="${c.id}">Supprimer</button>
       </div>
@@ -494,9 +544,23 @@ async function renderCredentials() {
   $$('[data-act]').forEach(b => b.addEventListener('click', async () => {
     const c = S.credentials.find(x => x.id === b.dataset.id);
     if (b.dataset.act === 'edit') openCredentialModal({ existing: c, onSaved: renderCredentials });
-    else if (await confirmDialog(`Supprimer l'identifiant « ${c.name} » ?`)) {
-      await API.del(`/api/credentials/${c.id}`);
-      renderCredentials();
+    else if (b.dataset.act === 'tg-on') {
+      b.disabled = true;
+      try {
+        await API.post('/api/telegram/links', { credentialId: c.id });
+        toast('Chef d\'atelier activé — envoie un message à ton bot pour le jumeler', 'success');
+        renderCredentials();
+      } catch (e) { toast(e.message, 'error'); b.disabled = false; }
+    } else if (b.dataset.act === 'tg-off') {
+      if (await confirmDialog('Couper le chef d\'atelier de ce bot ?', { okLabel: 'Couper', danger: false })) {
+        await API.del(`/api/telegram/links/${b.dataset.link}`);
+        renderCredentials();
+      }
+    } else if (b.dataset.act === 'del') {
+      if (await confirmDialog(`Supprimer l'identifiant « ${c.name} » ?`)) {
+        await API.del(`/api/credentials/${c.id}`);
+        renderCredentials();
+      }
     }
   }));
 }
@@ -620,8 +684,8 @@ async function renderExecutions() {
   const rows = execs.map(e => `
     <div class="wf-row" data-id="${e.id}">
       <div class="grow">
-        <div class="wf-name">${esc(e.workflow_name || 'Workflow supprimé')}</div>
-        <div class="wf-meta">Démarré ${fmtDate(e.started_at)} · ${e.finished_at ? `durée ${duration(e.started_at, e.finished_at)}` : 'en cours…'}</div>
+        <div class="wf-name">${esc(e.workflow_name || 'Workflow supprimé')}${e.dry_run ? ' ' + SIM_TAG : ''}</div>
+        <div class="wf-meta">Démarré ${fmtDate(e.started_at)} · ${e.finished_at ? `durée ${duration(e.started_at, e.finished_at)}` : 'en cours…'}${costLine(e) ? ' · ' + costLine(e) : ''}</div>
       </div>
       <span class="badge status-${e.status}">${STATUS_FR[e.status] || e.status}</span>
     </div>`).join('');
@@ -665,6 +729,7 @@ async function openExecDetail(execId) {
       <summary>
         <span>${icon[l.status] || '•'}</span>
         <span style="flex:1">${esc(l.name)}</span>
+        ${l.usage ? `<span class="wf-meta">${fmtTokens((l.usage.inTok || 0) + (l.usage.outTok || 0))}${l.usage.eur != null ? ` · ${fmtEuro(l.usage.eur)}` : ''}</span>` : ''}
         <span class="badge status-${l.status}">${STATUS_FR[l.status] || l.status}</span>
         ${l.startedAt && l.finishedAt ? `<span class="wf-meta">${duration(l.startedAt, l.finishedAt)}</span>` : ''}
       </summary>
@@ -689,14 +754,62 @@ async function openExecDetail(execId) {
     <div class="modal" style="width:760px">
       <div class="modal-head">
         <h3>Exécution du ${fmtDate(e.started_at)}</h3>
+        ${e.dry_run ? SIM_TAG : ''}
+        ${costLine(e) ? `<span class="exec-cost mono">${costLine(e)}</span>` : ''}
         <span class="badge status-${e.status}">${STATUS_FR[e.status] || e.status}</span>
         <button class="btn btn-ghost btn-icon" data-close>✕</button>
       </div>
       <div class="modal-body">
         ${e.input ? `<div class="field"><label>Donnée d'entrée</label><div class="step-llm">${esc(e.input)}</div></div>` : ''}
         ${body || '<div class="out-empty">Aucun log.</div>'}
+        <div id="cm-zone"></div>
+      </div>
+      <div class="modal-foot" style="justify-content:space-between">
+        <div class="hint" style="align-self:center">Le contremaître audite cette exécution et propose des missions améliorées.</div>
+        <button class="btn btn-outline" id="cm-go">🧠 Contremaître</button>
       </div>
     </div>`);
+
+  $('#cm-go', m.el).addEventListener('click', async () => {
+    const btn = $('#cm-go', m.el);
+    const zone = $('#cm-zone', m.el);
+    btn.disabled = true;
+    zone.innerHTML = `<div class="out-empty"><span class="spinner"></span><br><br>Le contremaître relit l'exécution…</div>`;
+    try {
+      const r = await API.post(`/api/executions/${execId}/review`);
+      zone.innerHTML = `
+        <div class="ndv-sep">Rapport du contremaître</div>
+        <div class="step-llm" style="color:var(--text)">${esc(r.diagnostic)}</div>
+        ${(r.suggestions || []).map((s, i) => `
+          <div class="trig-card cm-card" data-i="${i}">
+            <div class="trig-top">
+              <span class="trig-ico">🔧</span>
+              <div class="grow"><div class="trig-name">${esc(s.name)}</div>
+              <div class="trig-sub">${esc(s.probleme)}</div></div>
+            </div>
+            <div class="trig-url" style="font-family:var(--font);font-size:12px;max-height:130px;overflow-y:auto">${esc(s.mission)}</div>
+            <div class="trig-actions">
+              <button class="btn btn-primary btn-sm cm-apply" data-i="${i}">✅ Appliquer cette mission</button>
+            </div>
+          </div>`).join('') || '<div class="hint" style="margin-top:10px">Aucune réécriture nécessaire — la chaîne est déjà solide.</div>'}`;
+      $$('.cm-apply', zone).forEach(b => b.addEventListener('click', async () => {
+        const s = r.suggestions[Number(b.dataset.i)];
+        b.disabled = true;
+        try {
+          await API.post(`/api/workflows/${e.workflow_id}/apply-mission`, { nodeId: s.nodeId, mission: s.mission });
+          b.textContent = '✅ Mission appliquée';
+          toast(`Mission de « ${s.name} » mise à jour`, 'success');
+          if (S.wf && S.wf.id === e.workflow_id) {
+            const node = S.canvas?.state.nodes.find(n => n.id === s.nodeId);
+            if (node) { node.config = node.config || {}; node.config.mission = s.mission; }
+          }
+        } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+      }));
+    } catch (err) {
+      zone.innerHTML = `<div class="step step-error">${esc(err.message)}</div>`;
+    }
+    btn.disabled = false;
+  });
 
   $$('[data-approval]', m.el).forEach(btn => btn.addEventListener('click', async () => {
     const box = btn.closest('.approval-box');
@@ -930,6 +1043,7 @@ async function renderEditor(id) {
         <div class="exec-bar">
           <button class="exec-hist-btn" id="ed-settings">⚙️ Réglages</button>
           <button class="exec-hist-btn" id="ed-triggers">⏰ Déclencheurs</button>
+          <button class="exec-hist-btn" id="ed-memory">🗄 Mémoire</button>
           <button class="exec-hist-btn" id="ed-hist">🕘 Historique</button>
           <button class="exec-btn" id="ed-run">▶ Exécuter la chaîne</button>
         </div>
@@ -941,6 +1055,10 @@ async function renderEditor(id) {
         <div class="side-panel" id="trigger-panel">
           <div class="sp-head"><h3>Déclencheurs</h3><button class="sp-close" id="trig-close">✕</button></div>
           <div class="sp-body" id="trig-body"><div class="out-empty">Chargement…</div></div>
+        </div>
+        <div class="side-panel" id="mem-panel">
+          <div class="sp-head"><h3>Mémoire d'usine</h3><button class="sp-close" id="mem-close">✕</button></div>
+          <div class="sp-body" id="mem-body"><div class="out-empty">Chargement…</div></div>
         </div>
         <div class="side-panel left" id="hist-panel">
           <div class="sp-head"><h3>Exécutions</h3><button class="sp-close" id="hist-close">✕</button></div>
@@ -983,6 +1101,7 @@ async function renderEditor(id) {
 
   /* ---------- réglages de la chaîne ---------- */
   $('#ed-settings').addEventListener('click', () => {
+    const tgCreds = S.credentials.filter(c => c.type === 'telegram');
     const m = openModal(`
       <div class="modal" style="max-width:560px">
         <div class="modal-head"><h3>⚙️ Réglages de la chaîne</h3><button class="sp-close" data-close>✕</button></div>
@@ -991,6 +1110,13 @@ async function renderEditor(id) {
             <input class="input mono" id="set-notify" value="${esc(wfSettings.notifyWebhookUrl || '')}" placeholder="https://discord.com/api/webhooks/…">
             <div class="hint">Si la chaîne échoue (surtout la nuit en cron), L'usine envoie un message ici.
             Compatible Discord, Slack, ou n'importe quelle URL qui accepte du JSON. Laisse vide pour désactiver.</div></div>
+          <div class="field"><label>Rapport Telegram après chaque exécution</label>
+            <select class="select" id="set-tg">
+              <option value="">— Désactivé —</option>
+              ${tgCreds.map(c => `<option value="${c.id}" ${wfSettings.telegramCredId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+            </select>
+            <div class="hint">Statut, durée, coût estimé et résultat final envoyés sur Telegram à la fin de chaque exécution.
+            ${tgCreds.length ? '' : 'Ajoute d\'abord un identifiant Telegram (bot) dans la page Identifiants.'}</div></div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-ghost" data-close>Annuler</button>
@@ -999,6 +1125,7 @@ async function renderEditor(id) {
       </div>`);
     $('#set-save', m.el).addEventListener('click', () => {
       wfSettings.notifyWebhookUrl = $('#set-notify', m.el).value.trim();
+      wfSettings.telegramCredId = $('#set-tg', m.el).value || '';
       setDirty(true);
       m.close();
       toast('Réglages appliqués — pense à enregistrer la chaîne', 'success');
@@ -1054,7 +1181,12 @@ async function renderEditor(id) {
     }));
   };
   renderAddPanel();
-  $('#ed-add').addEventListener('click', () => { $('#hist-panel').classList.remove('open'); $('#add-panel').classList.add('open'); });
+  $('#ed-add').addEventListener('click', () => {
+    $('#hist-panel').classList.remove('open');
+    $('#trigger-panel').classList.remove('open');
+    $('#mem-panel').classList.remove('open');
+    $('#add-panel').classList.add('open');
+  });
   $('#add-close').addEventListener('click', () => $('#add-panel').classList.remove('open'));
   $('#add-search').addEventListener('input', (e) => renderAddPanel(e.target.value));
 
@@ -1065,8 +1197,8 @@ async function renderEditor(id) {
       <div class="exec-row ${e.id === selId ? 'sel' : ''}" data-id="${e.id}">
         <span>${{ success: '✅', error: '❌', running: '⏳', stopped: '⏹' }[e.status] || '•'}</span>
         <div style="flex:1">
-          <div class="t">${fmtDate(e.started_at)} ${SOURCE_TAG(e.source)}</div>
-          <div class="d">${e.finished_at ? duration(e.started_at, e.finished_at) : 'en cours…'}</div>
+          <div class="t">${fmtDate(e.started_at)} ${SOURCE_TAG(e.source)}${e.dry_run ? ' ' + SIM_TAG : ''}</div>
+          <div class="d">${e.finished_at ? duration(e.started_at, e.finished_at) : 'en cours…'}${costLine(e) ? ' · ' + costLine(e) : ''}</div>
         </div>
         <span class="badge status-${e.status}">${STATUS_FR[e.status] || e.status}</span>
       </div>`).join('') : '<div class="out-empty">Aucune exécution.<br>Lance la chaîne, ou ajoute un déclencheur.</div>';
@@ -1133,10 +1265,48 @@ async function renderEditor(id) {
   }
   $('#ed-triggers').addEventListener('click', () => {
     $('#add-panel').classList.remove('open');
+    $('#mem-panel').classList.remove('open');
     $('#trigger-panel').classList.toggle('open');
     if ($('#trigger-panel').classList.contains('open')) refreshTriggers();
   });
   $('#trig-close').addEventListener('click', () => $('#trigger-panel').classList.remove('open'));
+
+  /* ---------- panneau mémoire d'usine ---------- */
+  async function refreshMemories() {
+    let mems = [];
+    try { mems = await API.get(`/api/workflows/${wf.id}/memories`); } catch {}
+    $('#mem-body').innerHTML = `
+      <div class="hint" style="margin:2px 2px 14px">Ce que tes agents ont choisi de retenir d'une exécution à l'autre (outils <span class="mono">memoire_lire</span> / <span class="mono">memoire_ecrire</span>).</div>
+      ${mems.length ? mems.map(mm => `
+        <div class="trig-card" data-id="${mm.id}">
+          <div class="trig-top">
+            <span class="trig-ico">🗄</span>
+            <div class="grow"><div class="trig-name mono" style="font-size:12px">${esc(mm.key)}</div>
+            <div class="trig-sub">${timeAgo(mm.updated_at)}</div></div>
+            <button class="btn btn-ghost btn-icon mem-del" title="Oublier">🗑</button>
+          </div>
+          <div class="trig-url" style="font-family:var(--font);font-size:12px;max-height:110px;overflow-y:auto">${esc(mm.value)}</div>
+        </div>`).join('') + `
+        <button class="btn btn-danger btn-sm" id="mem-purge" style="width:100%;justify-content:center;margin-top:8px">🗑 Tout oublier</button>`
+      : '<div class="out-empty" style="padding:20px 8px">Mémoire vide.<br>Les agents la remplissent d\'eux-mêmes quand quelque chose mérite d\'être retenu.</div>'}`;
+    $$('#mem-body .mem-del').forEach(b => b.addEventListener('click', async () => {
+      await API.del(`/api/workflows/${wf.id}/memories/${b.closest('.trig-card').dataset.id}`);
+      refreshMemories();
+    }));
+    $('#mem-purge')?.addEventListener('click', async () => {
+      if (await confirmDialog('Vider toute la mémoire de cette chaîne ?', { okLabel: 'Tout oublier' })) {
+        await API.del(`/api/workflows/${wf.id}/memories/all`);
+        refreshMemories();
+      }
+    });
+  }
+  $('#ed-memory').addEventListener('click', () => {
+    $('#add-panel').classList.remove('open');
+    $('#trigger-panel').classList.remove('open');
+    $('#mem-panel').classList.toggle('open');
+    if ($('#mem-panel').classList.contains('open')) refreshMemories();
+  });
+  $('#mem-close').addEventListener('click', () => $('#mem-panel').classList.remove('open'));
 
   /* ---------- exécution ---------- */
   const runBtn = $('#ed-run');
@@ -1165,6 +1335,13 @@ async function renderEditor(id) {
           <div class="field"><label>Donnée d'entrée pour le premier agent (optionnel)</label>
             <textarea class="textarea" id="run-input" placeholder="Ex. : Sujet du jour : les bornes de recharge en copropriété…"></textarea>
           </div>
+          <div class="field">
+            <label class="check-row">
+              <input type="checkbox" id="run-dry">
+              <span>🧪 Répétition générale — <strong>mode simulation</strong></span>
+            </label>
+            <div class="hint">Les agents réfléchissent pour de vrai, mais leurs outils sont simulés : aucun email envoyé, aucune annonce publiée, aucune donnée modifiée. Idéal avant d'activer une chaîne.</div>
+          </div>
         </div>
         <div class="modal-foot">
           <button class="btn btn-outline" data-close>Annuler</button>
@@ -1173,12 +1350,14 @@ async function renderEditor(id) {
       </div>`);
     $('#run-go', m.el).addEventListener('click', async () => {
       const input = $('#run-input', m.el).value;
+      const dryRun = $('#run-dry', m.el).checked;
       m.close();
       try {
         cv.clearRunStatus();
-        const r = await API.post(`/api/workflows/${wf.id}/run`, { input });
+        const r = await API.post(`/api/workflows/${wf.id}/run`, { input, dryRun });
         S.runningExecId = r.execId;
         updateRunBtn();
+        if (dryRun) toast('🧪 Répétition générale lancée — rien de réel ne sera envoyé', '');
       } catch (e) { toast(e.message, 'error'); }
     });
   });
