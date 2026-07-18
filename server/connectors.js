@@ -577,6 +577,7 @@ register({
   description: "Publie et gère des annonces sur TA boutique Etsy. Gère l'OAuth 2.0 et le rafraîchissement automatique du token.",
   fields: [
     { key: 'keystring', label: 'Keystring (clé API de ta Seller App)', type: 'password', required: true },
+    { key: 'shared_secret', label: 'Shared secret (portail développeur — exigé par Etsy depuis fév. 2026)', type: 'password' },
     { key: 'refresh_token', label: 'Refresh token OAuth (scope listings_w listings_r)', type: 'password', required: true },
     { key: 'shop_id', label: 'Shop ID (identifiant numérique de ta boutique)', required: true },
     { key: 'shipping_profile_id', label: "Shipping profile ID (requis pour un produit physique)" },
@@ -586,6 +587,8 @@ register({
   buildTools(data, ctx) {
     const API = 'https://api.etsy.com/v3';
     const persist = ctx && ctx.persist;
+    /* Depuis février 2026, Etsy exige « keystring:shared_secret » dans x-api-key */
+    const apiKey = () => data.shared_secret ? `${data.keystring}:${data.shared_secret}` : data.keystring;
 
     async function ensureToken() {
       const now = Date.now();
@@ -611,7 +614,7 @@ register({
 
     async function api(method, path, opts = {}) {
       const token = await ensureToken();
-      const headers = { 'x-api-key': data.keystring, Authorization: `Bearer ${token}` };
+      const headers = { 'x-api-key': apiKey(), Authorization: `Bearer ${token}` };
       let body;
       if (opts.form) {
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -696,7 +699,7 @@ register({
                 const token = await ensureToken();
                 const up = await fetch(`${API}/application/shops/${data.shop_id}/listings/${listingId}/images`, {
                   method: 'POST',
-                  headers: { 'x-api-key': data.keystring, Authorization: `Bearer ${token}` },
+                  headers: { 'x-api-key': apiKey(), Authorization: `Bearer ${token}` },
                   body: fd
                 });
                 if (up.ok) uploaded++;
