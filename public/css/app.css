@@ -561,9 +561,6 @@ input[type=range] { flex: 1; accent-color: var(--primary); }
 .src-tag { font-size: 10px; padding: 1px 6px; border-radius: 5px; margin-left: 6px;
   font-weight: 600; vertical-align: middle; }
 .src-tag.cron { color: var(--orange); background: rgba(255,177,94,.14); }
-.src-tag.sim { color: var(--blue, #6c8cff); background: rgba(108,140,255,.16); border: 1px dashed rgba(108,140,255,.4); }
-.badge.status-partial { color: var(--orange); border-color: rgba(255,177,94,.4); background: rgba(255,177,94,.12); }
-.exec-cost { font-family: var(--mono); font-size: 11px; color: var(--muted-2); letter-spacing: .02em; white-space: nowrap; }
 .src-tag.hook { color: #6c8cff; background: rgba(108,140,255,.16); }
 
 .trig-add { display: flex; gap: 8px; margin: 4px 2px 6px; }

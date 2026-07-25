@@ -577,7 +577,6 @@ register({
   description: "Publie et gère des annonces sur TA boutique Etsy. Gère l'OAuth 2.0 et le rafraîchissement automatique du token.",
   fields: [
     { key: 'keystring', label: 'Keystring (clé API de ta Seller App)', type: 'password', required: true },
-    { key: 'shared_secret', label: 'Shared secret (portail développeur — exigé par Etsy depuis fév. 2026)', type: 'password' },
     { key: 'refresh_token', label: 'Refresh token OAuth (scope listings_w listings_r)', type: 'password', required: true },
     { key: 'shop_id', label: 'Shop ID (identifiant numérique de ta boutique)', required: true },
     { key: 'shipping_profile_id', label: "Shipping profile ID (requis pour un produit physique)" },
@@ -587,8 +586,6 @@ register({
   buildTools(data, ctx) {
     const API = 'https://api.etsy.com/v3';
     const persist = ctx && ctx.persist;
-    /* Depuis février 2026, Etsy exige « keystring:shared_secret » dans x-api-key */
-    const apiKey = () => data.shared_secret ? `${data.keystring}:${data.shared_secret}` : data.keystring;
 
     async function ensureToken() {
       const now = Date.now();
@@ -614,7 +611,7 @@ register({
 
     async function api(method, path, opts = {}) {
       const token = await ensureToken();
-      const headers = { 'x-api-key': apiKey(), Authorization: `Bearer ${token}` };
+      const headers = { 'x-api-key': data.keystring, Authorization: `Bearer ${token}` };
       let body;
       if (opts.form) {
         headers['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -652,7 +649,6 @@ register({
             who_made: { type: 'string', enum: ['i_did', 'someone_else', 'collective'], description: 'défaut i_did' },
             when_made: { type: 'string', description: 'ex : made_to_order (défaut), 2020_2025…' },
             image_urls: { type: 'array', items: { type: 'string' }, description: 'URLs des images à uploader (max 10). Au moins 1 pour publier.' },
-            file_urls: { type: 'array', items: { type: 'string' }, description: 'Produit numérique (type=download) : URLs des fichiers LIVRÉS à l\'acheteur (max 5). Obligatoire pour publier un download en active.' },
             state: { type: 'string', enum: ['active', 'draft'], description: 'active = publie (défaut), draft = brouillon' }
           },
           required: ['title', 'description', 'price']
@@ -700,7 +696,7 @@ register({
                 const token = await ensureToken();
                 const up = await fetch(`${API}/application/shops/${data.shop_id}/listings/${listingId}/images`, {
                   method: 'POST',
-                  headers: { 'x-api-key': apiKey(), Authorization: `Bearer ${token}` },
+                  headers: { 'x-api-key': data.keystring, Authorization: `Bearer ${token}` },
                   body: fd
                 });
                 if (up.ok) uploaded++;
@@ -709,41 +705,11 @@ register({
             }
             report.push(`${uploaded}/${urls.length} image(s) uploadée(s).`);
 
-            // 2b) Produit numérique : uploader les fichiers livrés à l'acheteur
-            let filesUploaded = 0;
-            const fileUrls = (args.file_urls || []).slice(0, 5);
-            if (type === 'download') {
-              for (let i = 0; i < fileUrls.length; i++) {
-                const u = fileUrls[i];
-                try {
-                  const fR = await fetch(u);
-                  if (!fR.ok) { report.push(`Fichier ignoré (téléchargement HTTP ${fR.status}) : ${u}`); continue; }
-                  const buf = Buffer.from(await fR.arrayBuffer());
-                  let name = decodeURIComponent(String(u).split('/').pop() || '').replace(/[?#].*$/, '').replace(/[^\w\-. ]+/g, '_');
-                  if (!name || name.length < 3) name = `fichier-${i + 1}.png`;
-                  const fd = new FormData();
-                  fd.append('file', new Blob([buf]), name);
-                  fd.append('name', name);
-                  const token = await ensureToken();
-                  const up = await fetch(`${API}/application/shops/${data.shop_id}/listings/${listingId}/files`, {
-                    method: 'POST',
-                    headers: { 'x-api-key': apiKey(), Authorization: `Bearer ${token}` },
-                    body: fd
-                  });
-                  if (up.ok) filesUploaded++;
-                  else report.push(`Échec upload fichier (HTTP ${up.status}) : ${(await up.text()).slice(0, 150)}`);
-                } catch (e) { report.push(`Erreur fichier ${u} : ${e.message}`); }
-              }
-              report.push(`${filesUploaded}/${fileUrls.length} fichier(s) numérique(s) livré(s) attaché(s).`);
-            }
-
-            // 3) Publier (active) si demandé — image requise, et fichier requis pour un download
+            // 3) Publier (active) si demandé et si au moins une image
             const wantActive = (args.state || 'active') === 'active';
             if (wantActive) {
               if (uploaded === 0) {
                 report.push("⚠️ Publication impossible sans image : l'annonce reste en BROUILLON.");
-              } else if (type === 'download' && filesUploaded === 0) {
-                report.push("⚠️ Produit numérique sans fichier livré (file_urls) : l'annonce reste en BROUILLON. Attache le fichier puis active-la.");
               } else {
                 const act = await api('PATCH', `/application/shops/${data.shop_id}/listings/${listingId}`, { form: { state: 'active' } });
                 if (act.status >= 200 && act.status < 300) report.push('✅ Annonce PUBLIÉE (active).');

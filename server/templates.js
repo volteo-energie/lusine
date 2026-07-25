@@ -141,6 +141,68 @@ Envoie-la par email avec ton outil SMTP : objet "📊 Rapport hebdo — semaine 
       settings: {}
     }
   }
+  ,{
+    id: 'gadgets-dropshipping',
+    icon: '🧲',
+    name: 'Gadgets Quotidien+ (dropshipping DSers)',
+    description: "Trouve des gadgets utiles qui font gagner du temps (AliExpress), prépare des offres et fiches irrésistibles, puis embellit les produits importés par DSers dans ta boutique Shopify. Pause de validation intégrée pour l'import DSers.",
+    connectors: ['HTTP / API générique (Apify)', 'Shopify (custom app token)', 'App DSers installée sur la boutique'],
+    data: {
+      nodes: [
+        { id: 'g1', name: 'Chasseur de gagnants', x: 60, y: 200, config: { icon: '🔎', color: '#4f9cf9', temperature: 0.4, maxIterations: 10, retries: 2, retryDelay: 5, mission:
+`Tu es dénicheur de produits gagnants pour une boutique dont la promesse est « tout ce qui rend le quotidien plus beau et plus facile ». Objectif : trouver des gadgets utiles, sourcés en Chine, qui se vendent VITE parce qu'ils font gagner du temps ou réduisent la fatigue au quotidien (cuisine, ménage, rangement, salle de bain, voiture, bureau).
+
+TON OUTIL DE DONNÉES (Apify) : http_request avec method='POST', url='/acts/epctex~aliexpress-scraper/run-sync-get-dataset-items', timeoutMs=120000, body={"searchTerms": ["<mots-clés>"], "maxItems": 25, "shipTo": "FR", "currency": "EUR", "language": "en_US"}.
+Fais 3 recherches avec des mots-clés différents EN ANGLAIS orientés gain de temps (ex : "kitchen gadget time saving", "cleaning tool labor saving", "home organizer space saving", "bathroom gadget"). L'appel peut prendre ~1-2 minutes : c'est normal. Si l'API renvoie une erreur, rapporte-la textuellement.
+
+CRITÈRES D'UN GAGNANT : beaucoup de commandes/avis, note ≥ 4.5, prix fournisseur bas (2 à 12 €), effet « wow c'est malin » compréhensible en UNE image, bénéfice concret de temps ou d'effort économisé, facile à expédier (petit, léger, incassable).
+
+LIVRABLE — TOP 5 des produits classés par potentiel, avec pour CHACUN :
+- Nom court et clair (pas le titre AliExpress à rallonge)
+- Prix fournisseur constaté + prix de vente conseillé (×3 à ×4, prix psychologique en ,90)
+- Le bénéfice quotidien chiffrable honnêtement (ex : « divise le temps d'épluchage par 3 »)
+- L'URL DU PRODUIT SOURCE AliExpress (indispensable pour la suite)
+Termine par « RECOMMANDATION : les 3 à publier sont … »
+
+⚠️ Connecteur requis : coche ton identifiant HTTP générique configuré sur https://api.apify.com/v2 avec ton token Apify.` } },
+        { id: 'g2', name: "Concepteur d'offre", x: 340, y: 200, config: { icon: '🧠', color: '#9b5cff', temperature: 0.7, maxIterations: 5, mission:
+`Tu es concepteur d'offres e-commerce pour une boutique « qui rend le quotidien plus beau ». On te donne un TOP 5 de gadgets utiles avec prix, bénéfices et URLs sources.
+
+Sélectionne les 3 MEILLEURS (impact quotidien + marge + facilité de compréhension). Pour chacun, construis l'offre : NOM DE PRODUIT français, court et désirable ; la PROMESSE principale en une phrase (bénéfice concret et crédible — jamais de chiffre invérifiable) ; 3 bénéfices secondaires ; le PRIX DE VENTE final (prix psychologique en ,90) ; à qui ça s'adresse et dans quelle situation du quotidien.
+
+IMPORTANT : recopie intégralement pour chaque produit son URL SOURCE AliExpress — les agents suivants en ont besoin. Classe les 3 offres de la plus forte à la moins forte.` } },
+        { id: 'g3', name: 'Rédacteur fiche', x: 620, y: 200, config: { icon: '✍️', color: '#3ee6c1', temperature: 0.7, maxIterations: 5, mission:
+`Tu es rédacteur e-commerce Shopify. On te donne 3 offres de gadgets malins avec leurs URLs sources.
+
+Commence ta réponse par un bloc bien visible :
+« 📥 À IMPORTER DANS DSERS (Import List → Push to Store en draft) : » suivi des URLs AliExpress des 3 produits, une par ligne.
+
+Puis, pour CHAQUE produit, rédige la fiche complète :
+- TITRE : le nom du produit + le bénéfice clé (60 caractères max)
+- DESCRIPTION en HTML simple (<p>, <strong>, <ul><li>) : accroche sur le problème du quotidien → la solution → liste de bénéfices → caractéristiques → réassurance. Termine par la mention : « 📦 Livraison suivie sous 7 à 15 jours ouvrés. »
+- TAGS : 6 à 10 tags pertinents en français, en incluant OBLIGATOIREMENT le tag "darri"
+- PRIX : celui de l'offre
+- PRODUIT SOURCE : recopie le nom source et l'URL AliExpress (indispensable pour que l'agent suivant retrouve le bon brouillon).
+Ton naturel et convaincant, jamais mensonger.` } },
+        { id: 'g4', name: 'Éditeur de fiches Shopify', x: 900, y: 200, config: { icon: '🛍️', color: '#ffa24b', temperature: 0.3, maxIterations: 8, retries: 2, retryDelay: 5, onError: 'continue', loop: 'foreach', loopMaxItems: 5, loopSplitHint: 'une offre produit complète avec sa fiche et son URL source', approval: true, mission:
+`Tu es éditeur de fiches sur la boutique Shopify. Les produits ont été importés par DSers depuis AliExpress : ils existent déjà en brouillon avec les vraies images, mais leurs titres et descriptions sont bruts. Tu reçois UNE offre produit travaillée (titre français, description HTML, prix, tags, et le nom/URL du produit source).
+
+MÉTHODE :
+1. Liste les brouillons récents : GET /products.json?status=draft&limit=20&order=created_at+desc — identifie le produit correspondant à ton offre (son titre brut AliExpress ressemble au nom du produit source).
+2. Récupère son détail : GET /products/<id>.json — note l'id du produit ET l'id de sa première variante.
+3. Mets-le à jour : PUT /products/<id>.json avec ce corps :
+{"product": {"id": <id>, "title": "<ton titre>", "body_html": "<ta description HTML>", "vendor": "Quotidien+", "tags": "darri, <autres tags>", "variants": [{"id": <variant_id>, "price": "<prix, ex 19.90>"}]}}
+
+RÈGLES : le tag "darri" est OBLIGATOIRE. NE TOUCHE PAS aux images (elles viennent du vrai produit). Laisse le statut en draft. Si aucun brouillon ne correspond à l'offre, dis-le clairement au lieu d'en modifier un au hasard. Rapporte pour chaque produit : titre final + id. Ne modifie jamais deux fois le même produit.
+
+⚠️ Connecteur requis : coche ton identifiant Shopify (domaine de la boutique + token shpat_ d'une custom app avec les scopes read_products et write_products). Prérequis boutique : l'app DSers doit être installée — c'est elle qui importe les produits et expédie les commandes.` } }
+      ],
+      connections: [
+        { from: 'g1', to: 'g2' }, { from: 'g2', to: 'g3' }, { from: 'g3', to: 'g4' }
+      ],
+      settings: {}
+    }
+  }
 ];
 
 function listTemplates() {

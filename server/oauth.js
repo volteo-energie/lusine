@@ -23,20 +23,18 @@ const SERVICES = {
     clientOnly: true, // pas de client_secret (PKCE pur)
     env: 'ETSY',
     // transforme la réponse token en données de credential
-    async toCredentialData({ tokens, clientId, clientSecret }) {
+    async toCredentialData({ tokens, clientId }) {
       const data = {
         keystring: clientId,
-        shared_secret: clientSecret || '',
         refresh_token: tokens.refresh_token,
         access_token: tokens.access_token,
         token_expiry: Date.now() + (Number(tokens.expires_in || 3600) * 1000)
       };
       // récupère le shop_id automatiquement (l'user_id Etsy est le préfixe du token)
-      // NB : depuis février 2026, Etsy exige « keystring:shared_secret » dans x-api-key
       try {
         const userId = String(tokens.access_token).split('.')[0];
         const r = await fetch(`https://api.etsy.com/v3/application/users/${userId}/shops`, {
-          headers: { 'x-api-key': clientSecret ? `${clientId}:${clientSecret}` : clientId, Authorization: `Bearer ${tokens.access_token}` }
+          headers: { 'x-api-key': clientId, Authorization: `Bearer ${tokens.access_token}` }
         });
         if (r.ok) {
           const j = await r.json();
@@ -116,7 +114,7 @@ async function finishAuth({ state, code, redirectUri }) {
   const text = await r.text();
   let tokens; try { tokens = JSON.parse(text); } catch { throw new Error('Réponse token illisible : ' + text.slice(0, 200)); }
   if (!tokens.access_token) throw new Error('Échange du code échoué : ' + (tokens.error_description || tokens.error || text.slice(0, 200)));
-  const data = await s.toCredentialData({ tokens, clientId: s.clientId, clientSecret: s.clientSecret });
+  const data = await s.toCredentialData({ tokens, clientId: s.clientId });
   return { userId: p.userId, service: p.service, credentialType: s.credentialType, credName: p.credName, data };
 }
 
