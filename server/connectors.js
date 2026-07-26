@@ -975,27 +975,55 @@ register({
       },
       {
         name: 'tiktok_publish_from_url',
-        description: "Publie une vidéo TikTok depuis une URL publique (le serveur TikTok télécharge la vidéo). Renvoie un publish_id à surveiller avec tiktok_publish_status.",
+        description: "Publie une vidéo TikTok à partir d'un short généré par le Studio vidéo. Donne l'URL du MP4 (celle renvoyée par make_short, sur /generated/) : L'usine téléverse le fichier directement vers TikTok (FILE_UPLOAD — aucune vérification de domaine requise). Renvoie un publish_id à surveiller avec tiktok_publish_status.",
         parameters: {
           type: 'object',
           properties: {
-            video_url: { type: 'string', description: 'URL publique directe du MP4 (domaine vérifié dans l\'app TikTok)' },
+            video_url: { type: 'string', description: "URL du MP4 renvoyée par make_short (ex. https://app.8n8.fr/generated/.../short.mp4)" },
             title: { type: 'string', description: 'Légende du post (max 150 caractères, hashtags inclus)' }
           },
           required: ['video_url', 'title']
         },
         run: async (args) => {
           const privacy = String(data.default_privacy || 'SELF_ONLY').trim() || 'SELF_ONLY';
-          const res = await tiktokPost(data, persist, '/v2/post/publish/video/init/', {
+          // 1) localiser le fichier vidéo sur disque à partir de son URL /generated/
+          const vurl = String(args.video_url || '');
+          const m = vurl.match(/\/generated\/(.+)$/);
+          if (!m) throw new Error("URL vidéo invalide : fournis l'URL renvoyée par make_short (elle contient /generated/).");
+          const filePath = path.join(GENERATED_DIR, m[1].split('?')[0]);
+          if (!fs.existsSync(filePath)) throw new Error('Fichier vidéo introuvable sur le serveur : ' + m[1]);
+          const size = fs.statSync(filePath).size;
+          // 2) init en FILE_UPLOAD (une seule part couvrant tout le fichier)
+          const init = await tiktokPost(data, persist, '/v2/post/publish/video/init/', {
             post_info: {
               title: String(args.title || '').slice(0, 150),
               privacy_level: privacy,
               disable_comment: false, disable_duet: false, disable_stitch: false,
               video_cover_timestamp_ms: 1000
             },
-            source_info: { source: 'PULL_FROM_URL', video_url: String(args.video_url || '') }
+            source_info: {
+              source: 'FILE_UPLOAD',
+              video_size: size,
+              chunk_size: size,
+              total_chunk_count: 1
+            }
           });
-          return trunc(JSON.stringify(res));
+          const uploadUrl = init.upload_url;
+          const publishId = init.publish_id;
+          if (!uploadUrl) throw new Error('TikTok n\'a pas renvoyé d\'upload_url : ' + JSON.stringify(init).slice(0, 200));
+          // 3) PUT du fichier vers TikTok (le token courant)
+          const token = await tiktokEnsureToken(data, persist);
+          const buf = fs.readFileSync(filePath);
+          const put = await doFetch(uploadUrl, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'video/mp4',
+              'Content-Range': `bytes 0-${size - 1}/${size}`
+            },
+            body: buf
+          }, 120000);
+          if (put.status >= 300) throw new Error(`Téléversement TikTok échoué (HTTP ${put.status}) : ${String(put.text).slice(0, 200)}`);
+          return trunc(JSON.stringify({ publish_id: publishId, uploaded_bytes: size, status: 'uploaded' }));
         }
       },
       {
