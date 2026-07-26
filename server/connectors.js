@@ -826,6 +826,59 @@ function ffmpegFont() {
   return candidates[0];
 }
 
+async function renderShort(imageUrls, captions, userId) {
+  const os = require('os');
+  const urls = (imageUrls || []).filter(u => /^https?:\/\//.test(String(u))).slice(0, 4);
+  const caps = (captions || []).map(c => String(c).slice(0, 90)).filter(Boolean).slice(0, 4);
+  if (!urls.length) throw new Error("Aucune URL d'image valide.");
+  if (!caps.length) throw new Error('Aucun texte fourni.');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'vshort-'));
+  try {
+    const imgs = [];
+    for (let i = 0; i < urls.length; i++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      let resp;
+      try { resp = await fetch(urls[i], { signal: ctrl.signal }); }
+      finally { clearTimeout(timer); }
+      if (!resp.ok) throw new Error(`Téléchargement image ${i + 1} impossible (HTTP ${resp.status})`);
+      const p = path.join(work, `img_${i}`);
+      fs.writeFileSync(p, Buffer.from(await resp.arrayBuffer()));
+      imgs.push(p);
+    }
+    const font = ffmpegFont();
+    const segs = [];
+    for (let i = 0; i < caps.length; i++) {
+      const img = imgs[i % imgs.length];
+      const txt = path.join(work, `cap_${i}.txt`);
+      fs.writeFileSync(txt, caps[i]);
+      const seg = path.join(work, `seg_${i}.mp4`);
+      const vf = [
+        "scale=1080:1920:force_original_aspect_ratio=increase",
+        "crop=1080:1920",
+        "zoompan=z='min(zoom+0.0012,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=100:s=1080x1920:fps=25",
+        `drawtext=fontfile=${font}:textfile=${txt}:fontcolor=white:fontsize=56:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=26:x=(w-text_w)/2:y=h-text_h-260`,
+        "fade=t=in:st=0:d=0.35",
+        "fade=t=out:st=3.65:d=0.35"
+      ].join(',');
+      await runFfmpeg(['-y', '-loop', '1', '-framerate', '25', '-i', img, '-vf', vf, '-t', '4', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', seg]);
+      segs.push(seg);
+    }
+    const list = path.join(work, 'list.txt');
+    fs.writeFileSync(list, segs.map(s => `file '${s}'`).join('\n'));
+    const out = path.join(work, 'short.mp4');
+    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest', '-c:v', 'copy', '-c:a', 'aac', out]);
+    const finalPath = path.join(GENERATED_DIR, (userId ? String(userId).replace(/[^a-zA-Z0-9-]/g, '') : 'shared'));
+    fs.mkdirSync(finalPath, { recursive: true });
+    const fname = `${Date.now().toString(36)}-${crypto.randomBytes(5).toString('hex')}.mp4`;
+    const dest = path.join(finalPath, fname);
+    fs.copyFileSync(out, dest);
+    return { path: dest, size: fs.statSync(dest).size, seconds: caps.length * 4 };
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function runFfmpeg(args, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     execFile('ffmpeg', args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, _out, stderr) => {
@@ -857,66 +910,19 @@ register({
       parameters: {
         type: 'object',
         properties: {
-          image_urls: { type: 'array', items: { type: 'string' }, description: "URLs des images produit (1 à 4). Si moins d'images que de textes, elles sont réutilisées." },
-          captions: { type: 'array', items: { type: 'string' }, description: "Textes affichés à l'écran, dans l'ordre (1 à 4, courts — max ~60 caractères chacun)." }
+          image_urls: { type: 'array', items: { type: 'string' }, description: "URLs des images produit (1 à 4)." },
+          captions: { type: 'array', items: { type: 'string' }, description: "Textes affichés à l'écran (1 à 4, courts)." }
         },
         required: ['image_urls', 'captions']
       },
       run: async (args) => {
-        const urls = (args.image_urls || []).filter(u => /^https?:\/\//.test(String(u))).slice(0, 4);
-        const caps = (args.captions || []).map(c => String(c).slice(0, 90)).filter(Boolean).slice(0, 4);
-        if (!urls.length) throw new Error('Aucune URL d\'image valide fournie.');
-        if (!caps.length) throw new Error('Aucun texte fourni.');
-        const work = fs.mkdtempSync(path.join(os.tmpdir(), 'vshort-'));
-        try {
-          // 1) télécharger les images
-          const imgs = [];
-          for (let i = 0; i < urls.length; i++) {
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 30000);
-            let resp;
-            try { resp = await fetch(urls[i], { signal: ctrl.signal }); }
-            finally { clearTimeout(timer); }
-            if (!resp.ok) throw new Error(`Téléchargement impossible de l'image ${i + 1} (HTTP ${resp.status})`);
-            const p = path.join(work, `img_${i}`);
-            fs.writeFileSync(p, Buffer.from(await resp.arrayBuffer()));
-            imgs.push(p);
-          }
-          const font = ffmpegFont();
-          // 2) un segment de 4 s par texte
-          const segs = [];
-          for (let i = 0; i < caps.length; i++) {
-            const img = imgs[i % imgs.length];
-            const txt = path.join(work, `cap_${i}.txt`);
-            fs.writeFileSync(txt, caps[i]);
-            const seg = path.join(work, `seg_${i}.mp4`);
-            const vf = [
-              "scale=1080:1920:force_original_aspect_ratio=increase",
-              "crop=1080:1920",
-              "zoompan=z='min(zoom+0.0012,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=100:s=1080x1920:fps=25",
-              `drawtext=fontfile=${font}:textfile=${txt}:fontcolor=white:fontsize=56:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=26:x=(w-text_w)/2:y=h-text_h-260`,
-              "fade=t=in:st=0:d=0.35",
-              "fade=t=out:st=3.65:d=0.35"
-            ].join(',');
-            await runFfmpeg(['-y', '-loop', '1', '-framerate', '25', '-i', img, '-vf', vf, '-t', '4', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', seg]);
-            segs.push(seg);
-          }
-          // 3) concat + piste audio silencieuse (compatibilité maximale)
-          const list = path.join(work, 'list.txt');
-          fs.writeFileSync(list, segs.map(s => `file '${s}'`).join('\n'));
-          const out = path.join(work, 'short.mp4');
-          await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest', '-c:v', 'copy', '-c:a', 'aac', out]);
-          const url = saveGeneratedFile(out, 'mp4', ctx && ctx.userId);
-          const secs = caps.length * 4;
-          // extraire le chemin relatif <sub>/<file>.mp4 pour une reprise fiable par l'agent
-          const relMatch = url.match(/\/generated\/(.+)$/);
-          const rel = relMatch ? relMatch[1] : '';
-          return `Short généré (${secs} s, 1080x1920).\nURL : ${url}\nRÉFÉRENCE VIDÉO (à recopier telle quelle dans tiktok_publish_from_url) : ${rel}`;
-        } finally {
-          try { fs.rmSync(work, { recursive: true, force: true }); } catch {}
-        }
+        const r = await renderShort(args.image_urls, args.captions, ctx && ctx.userId);
+        const rel = r.path.split('/generated/')[1] || path.basename(r.path);
+        const base = publicBase();
+        const url = base ? `${base}/generated/${rel}` : `/generated/${rel}`;
+        return `Short généré (${r.seconds} s, 1080x1920).\nURL : ${url}\nRÉFÉRENCE VIDÉO : ${rel}`;
       }
-    }];
+        }];
   }
 });
 
@@ -975,6 +981,48 @@ register({
         description: "Infos du compte TikTok connecté (pseudo, visibilités autorisées, durée max des vidéos). À appeler avant de publier.",
         parameters: { type: 'object', properties: {} },
         run: async () => trunc(JSON.stringify(await tiktokPost(data, persist, '/v2/post/publish/creator_info/query/', {})))
+      },
+      {
+        name: 'make_and_publish_short',
+        description: "TOUT EN UN (recommandé) : fabrique le short vidéo vertical à partir des images + textes, PUIS le publie directement sur TikTok. Une seule étape — pas besoin d'appeler make_short avant. Renvoie le publish_id.",
+        parameters: {
+          type: 'object',
+          properties: {
+            image_urls: { type: 'array', items: { type: 'string' }, description: "URLs des images produit (1 à 4)." },
+            captions: { type: 'array', items: { type: 'string' }, description: "Les textes à afficher à l'écran, dans l'ordre (1 à 4, courts)." },
+            title: { type: 'string', description: 'Légende du post TikTok (hook + hashtags + « boutique en bio », 150 caractères max).' }
+          },
+          required: ['image_urls', 'captions', 'title']
+        },
+        run: async (args) => {
+          // 1) montage local
+          const r = await renderShort(args.image_urls, args.captions, ctx && ctx.userId);
+          // 2) init FILE_UPLOAD
+          const privacy = String(data.default_privacy || 'SELF_ONLY').trim() || 'SELF_ONLY';
+          const init = await tiktokPost(data, persist, '/v2/post/publish/video/init/', {
+            post_info: {
+              title: String(args.title || '').slice(0, 150),
+              privacy_level: privacy,
+              disable_comment: false, disable_duet: false, disable_stitch: false,
+              video_cover_timestamp_ms: 1000
+            },
+            source_info: { source: 'FILE_UPLOAD', video_size: r.size, chunk_size: r.size, total_chunk_count: 1 }
+          });
+          if (!init.upload_url) throw new Error("TikTok n'a pas renvoyé d'upload_url : " + JSON.stringify(init).slice(0, 200));
+          // 3) téléversement du fichier
+          const token = await tiktokEnsureToken(data, persist);
+          const buf = fs.readFileSync(r.path);
+          const put = await doFetch(init.upload_url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'video/mp4', 'Content-Range': `bytes 0-${r.size - 1}/${r.size}` },
+            body: buf
+          }, 120000);
+          if (put.status >= 300) throw new Error(`Téléversement TikTok échoué (HTTP ${put.status}) : ${String(put.text).slice(0, 200)}`);
+          const base = publicBase();
+          const rel = r.path.split('/generated/')[1];
+          const url = base ? `${base}/generated/${rel}` : `/generated/${rel}`;
+          return trunc(JSON.stringify({ video_url: url, duration_s: r.seconds, publish_id: init.publish_id, uploaded_bytes: r.size, status: 'uploaded — surveille avec tiktok_publish_status' }));
+        }
       },
       {
         name: 'tiktok_publish_from_url',
