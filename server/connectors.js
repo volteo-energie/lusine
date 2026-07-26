@@ -791,15 +791,18 @@ register({
   id: 'mcp', name: 'Serveur MCP (universel)', icon: '🔌', category: 'Cœur',
   description: "Branche n'importe quel serveur MCP (Model Context Protocol) : colle son URL, autorise l'accès si demandé (OAuth automatique, aucune clé à créer), et tous ses outils deviennent disponibles pour tes agents. Exemple : https://mcp.dsers.com/dropshipping/mcp",
   fields: [
-    { key: 'url', label: 'URL du serveur MCP', placeholder: 'https://mcp.exemple.com/mcp' }
+    { key: 'url', label: 'URL du serveur MCP', placeholder: 'https://mcp.exemple.com/mcp' },
+    { key: 'toolFilter', label: "Limiter aux outils (préfixes séparés par des virgules — optionnel, recommandé pour les gros serveurs)", placeholder: 'tiktok_,generate_video,balance' }
   ],
   buildTools(data, ctx) {
-    const cached = Array.isArray(data.tools) ? data.tools : [];
+    let cached = Array.isArray(data.tools) ? data.tools : [];
+    const filters = String(data.toolFilter || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (filters.length) cached = cached.filter(t => filters.some(f => t.name === f || t.name.startsWith(f)));
     const credKey = (ctx && ctx.credKey) || data.url || 'mcp';
     return cached.map(t => ({
       name: t.name,
       description: `[MCP] ${t.description || t.name}`,
-      parameters: t.inputSchema || { type: 'object', properties: {} },
+      parameters: mcp.sanitizeSchema(t.inputSchema),
       run: async (args) => {
         const result = await mcp.callTool(data, credKey, t.name, args, ctx && ctx.persist);
         return trunc(mcp.contentToText(result));

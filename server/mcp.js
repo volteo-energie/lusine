@@ -275,6 +275,29 @@ async function callTool(data, credKey, name, args, persist) {
   }
 }
 
+
+/* ---------- Assainissement des schémas d'outils ----------
+ * Certains serveurs MCP publient des inputSchema que les fournisseurs LLM
+ * (OpenAI notamment) refusent : oneOf/anyOf/allOf/enum/const/not au sommet,
+ * $ref/$defs… On garantit ici un schéma objet simple et accepté partout. */
+function sanitizeSchema(s) {
+  const permissive = (desc) => ({ type: 'object', properties: {}, additionalProperties: true, ...(desc ? { description: String(desc).slice(0, 300) } : {}) });
+  if (!s || typeof s !== 'object') return permissive();
+  const banned = ['oneOf', 'anyOf', 'allOf', 'enum', 'const', 'not'];
+  let raw = '';
+  try { raw = JSON.stringify(s); } catch { return permissive(); }
+  if (raw.includes('"$ref"')) return permissive(s.description);
+  if (s.type !== 'object' || banned.some(k => Object.prototype.hasOwnProperty.call(s, k))) return permissive(s.description);
+  const out = {
+    type: 'object',
+    properties: (s.properties && typeof s.properties === 'object') ? s.properties : {},
+    additionalProperties: s.additionalProperties !== undefined ? s.additionalProperties : true
+  };
+  if (Array.isArray(s.required)) out.required = s.required.filter(r => typeof r === 'string');
+  if (s.description) out.description = String(s.description).slice(0, 500);
+  return out;
+}
+
 function contentToText(result) {
   if (!result) return 'Réponse vide.';
   if (Array.isArray(result.content)) {
@@ -289,4 +312,4 @@ function contentToText(result) {
   return JSON.stringify(result);
 }
 
-module.exports = { connect, discoverAuth, registerClient, buildAuthRequest, exchangeCode, refreshTokens, callTool, contentToText, ensureFreshToken };
+module.exports = { connect, discoverAuth, registerClient, buildAuthRequest, exchangeCode, refreshTokens, callTool, contentToText, ensureFreshToken, sanitizeSchema };
