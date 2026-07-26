@@ -228,6 +228,76 @@ Ne modifie jamais rien d'autre que le statut. Ne publie jamais deux fois le mêm
       settings: {}
     }
   }
+  ,{
+    id: 'marketing-social',
+    icon: '📣',
+    name: 'Marketing Quotidien+ (réseaux sociaux)',
+    description: "L'attaché de presse de ta boutique : sélectionne le dernier produit publié, écrit les posts, publie sur Instagram + Facebook, puis génère et publie la vidéo TikTok (via Higgsfield). Anti-doublon automatique par tag. À faire tourner 2 h après la chaîne produits.",
+    connectors: ['Shopify (custom app / Client Credentials)', 'HTTP générique « Meta Social » (token de Page Facebook)', 'Serveur MCP Higgsfield (outils tiktok_ + generate_video)'],
+    data: {
+      nodes: [
+        { id: 'm1', name: 'Sélecteur de produit', x: 60, y: 200, config: { icon: '🛍️', color: '#4f9cf9', temperature: 0.2, maxIterations: 8, retries: 2, retryDelay: 5, mission:
+`Tu es chargé de sélectionner le produit à promouvoir sur les réseaux sociaux de la boutique.
+
+MÉTHODE :
+1. GET /shop.json → note le domaine public de la boutique (champ myshopify_domain, ou domain s'il existe).
+2. GET /products.json?status=active&limit=10&order=created_at+desc
+3. Choisis le PLUS RÉCENT qui a le tag "darri" et qui N'A PAS le tag "promu-social". S'il n'y en a aucun, dis-le clairement et arrête-toi là.
+4. Récupère son détail (GET /products/<id>.json) : titre, description, prix, handle, URL de la première image (champ src).
+5. Marque-le : PUT /products/<id>.json avec {"product": {"id": <id>, "tags": "<tous les tags existants>, promu-social"}} — recopie bien TOUS les tags existants en y ajoutant promu-social.
+
+LIVRABLE — le dossier produit : TITRE · le BÉNÉFICE principal (une phrase tirée de la description) · PRIX · LIEN BOUTIQUE : https://<domaine>/products/<handle> · URL DE L'IMAGE (recopiée exactement). Rien d'autre.
+
+⚠️ Connecteur requis : coche ton identifiant Shopify.` } },
+        { id: 'm2', name: 'Copywriter social', x: 340, y: 200, config: { icon: '✍️', color: '#3ee6c1', temperature: 0.85, maxIterations: 4, mission:
+`Tu es community manager e-commerce. On te donne un dossier produit (titre, bénéfice, prix, lien, image).
+
+Rédige, dans des blocs clairement séparés :
+[INSTAGRAM] Une caption : hook fort en 1re ligne (le problème du quotidien), 2-3 bénéfices avec émojis sobres, prix, CTA « boutique en bio », 10 hashtags français + anglais pertinents.
+[FACEBOOK] Un post plus posé, 3-4 phrases, orienté bénéfice concret, prix + lien boutique en clair.
+[PINTEREST] TITRE (max 90 caractères, mots-clés de recherche) + DESCRIPTION (max 400 caractères, SEO naturel).
+[TIKTOK] Un concept de vidéo de 12 secondes : 3 plans décrits (problème → geste avec le produit → résultat), le texte à l'écran pour chaque plan, et une description de post (hook + 3 hashtags + « 🛒 boutique en bio »).
+
+Recopie à la fin, exactement : LIEN BOUTIQUE et URL DE L'IMAGE. Ton naturel, jamais mensonger.` } },
+        { id: 'm3', name: 'Publieur Meta (IG + FB)', x: 620, y: 200, config: { icon: '📣', color: '#9b5cff', temperature: 0.2, maxIterations: 8, retries: 2, retryDelay: 10, onError: 'continue', mission:
+`Tu publies sur Instagram et la Page Facebook de la boutique. Tu reçois les textes par réseau + l'URL de l'image produit.
+
+DÉCOUVERTE (une fois par exécution) :
+1. GET /me?fields=id,name,instagram_business_account → note PAGE_ID (champ id) et IG_ID (instagram_business_account.id).
+
+INSTAGRAM (2 étapes) :
+2. POST /<IG_ID>/media avec body {"image_url": "<URL de l'image>", "caption": "<caption du bloc INSTAGRAM>"} → note l'id retourné.
+3. POST /<IG_ID>/media_publish avec body {"creation_id": "<id de l'étape 2>"}.
+
+FACEBOOK :
+4. POST /<PAGE_ID>/photos avec body {"url": "<URL de l'image>", "message": "<texte du bloc FACEBOOK>"}.
+
+RAPPORT : pour chaque réseau, l'id du post créé ou l'erreur exacte de l'API (recopie-la textuellement, n'invente rien).
+IMPÉRATIF, quoi qu'il arrive (même si tu ne peux rien publier) : termine ta réponse en recopiant INTÉGRALEMENT le bloc [TIKTOK], le LIEN BOUTIQUE et l'URL DE L'IMAGE — l'agent suivant en a besoin.
+
+⚠️ Connecteur requis : coche ton identifiant HTTP générique « Meta Social » (URL de base https://graph.facebook.com/v21.0 + token de Page).` } },
+        { id: 'm4', name: 'Vidéaste TikTok', x: 900, y: 200, config: { icon: '🎬', color: '#ff6d5a', temperature: 0.3, maxIterations: 15, retries: 1, retryDelay: 15, onError: 'continue', mission:
+`Tu es vidéaste TikTok de la boutique. Tu reçois un concept vidéo de 12 secondes (3 plans + textes à l'écran + description de post), l'URL de l'image produit et le lien boutique.
+
+AVANT TOUT, deux vérifications :
+1. balance → si les crédits sont insuffisants pour une génération vidéo, ARRÊTE-TOI et rapporte le solde exact. Ne force jamais.
+2. tiktok_accounts → s'il n'y a AUCUN compte TikTok connecté, appelle tiktok_connect, rapporte précisément l'URL ou l'instruction de connexion retournée, et ARRÊTE-TOI (un humain doit autoriser une seule fois).
+
+SI tout est prêt, PRODUCTION :
+3. media_import_url avec l'URL de l'image produit → note l'identifiant du média importé.
+4. generate_video : une vidéo VERTICALE 9:16 courte à partir de l'image produit, inspirée du concept (mouvement de caméra simple et élégant, le produit en vedette). Choisis le modèle le MOINS CHER disponible. Si la génération est un job asynchrone, surveille-la jusqu'à la fin avec l'outil de statut disponible.
+5. Publication : tiktok_prepare_publish avec la vidéo et la description du concept → puis tiktok_publish → puis tiktok_publish_status pour confirmer.
+
+RAPPORT : solde de crédits AVANT et APRÈS, identifiant de la vidéo, statut de publication (ou l'erreur exacte de l'étape qui a échoué — recopie-la, n'invente rien). Ne génère JAMAIS plus d'UNE vidéo par exécution.
+
+⚠️ Connecteur requis : coche ton identifiant Serveur MCP Higgsfield (avec le filtre d'outils : balance,tiktok_,media_import_url,generate_video,job_display).` } }
+      ],
+      connections: [
+        { from: 'm1', to: 'm2' }, { from: 'm2', to: 'm3' }, { from: 'm3', to: 'm4' }
+      ],
+      settings: {}
+    }
+  }
 ];
 
 function listTemplates() {
