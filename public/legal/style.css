@@ -1,0 +1,5 @@
+body{font-family:system-ui,-apple-system,sans-serif;background:#12131a;color:#ecedf3;max-width:760px;margin:0 auto;padding:48px 24px;line-height:1.7}
+h1{font-size:1.8rem;letter-spacing:-.02em}h2{font-size:1.15rem;margin-top:2.2em;color:#ffb08a}
+p,li{color:#c4c6d4;font-size:.98rem}a{color:#ff8a5c}
+.badge{display:inline-block;background:linear-gradient(115deg,#FF6D5A,#FFA24B);color:#1A0F0C;font-weight:800;padding:.3rem .9rem;border-radius:99px;font-size:.85rem;margin-bottom:1.4rem}
+footer{margin-top:3.5rem;padding-top:1.5rem;border-top:1px solid rgba(255,255,255,.1);font-size:.85rem;color:#8a8ca0}

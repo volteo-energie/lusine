@@ -363,7 +363,7 @@ fastify.get('/api/bootstrap', async (req) => {
   const uid = currentUserId(req);
   let email = null;
   if (uid) email = db.prepare('SELECT email FROM users WHERE id = ?').get(uid)?.email || null;
-  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.11.0' };
+  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.11.1' };
 });
 
 fastify.post('/api/auth/register', async (req, reply) => {
