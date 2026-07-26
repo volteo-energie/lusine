@@ -1,6 +1,6 @@
 {
   "name": "lusine",
-  "version": "3.11.2",
+  "version": "3.11.3",
   "description": "L'usine — orchestrateur visuel d'agents IA autonomes, style n8n, auto-hébergé",
   "main": "server/index.js",
   "scripts": {

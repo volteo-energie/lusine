@@ -908,7 +908,10 @@ register({
           await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest', '-c:v', 'copy', '-c:a', 'aac', out]);
           const url = saveGeneratedFile(out, 'mp4', ctx && ctx.userId);
           const secs = caps.length * 4;
-          return `Short généré (${secs} s, 1080x1920) : ${url}`;
+          // extraire le chemin relatif <sub>/<file>.mp4 pour une reprise fiable par l'agent
+          const relMatch = url.match(/\/generated\/(.+)$/);
+          const rel = relMatch ? relMatch[1] : '';
+          return `Short généré (${secs} s, 1080x1920).\nURL : ${url}\nRÉFÉRENCE VIDÉO (à recopier telle quelle dans tiktok_publish_from_url) : ${rel}`;
         } finally {
           try { fs.rmSync(work, { recursive: true, force: true }); } catch {}
         }
@@ -986,12 +989,38 @@ register({
         },
         run: async (args) => {
           const privacy = String(data.default_privacy || 'SELF_ONLY').trim() || 'SELF_ONLY';
-          // 1) localiser le fichier vidéo sur disque à partir de son URL /generated/
-          const vurl = String(args.video_url || '');
-          const m = vurl.match(/\/generated\/(.+)$/);
-          if (!m) throw new Error("URL vidéo invalide : fournis l'URL renvoyée par make_short (elle contient /generated/).");
-          const filePath = path.join(GENERATED_DIR, m[1].split('?')[0]);
-          if (!fs.existsSync(filePath)) throw new Error('Fichier vidéo introuvable sur le serveur : ' + m[1]);
+          // 1) localiser le fichier vidéo sur disque, en acceptant plusieurs formes d'entrée
+          let vurl = String(args.video_url || '').trim().split('?')[0];
+          let filePath = null;
+          const gm = vurl.match(/\/generated\/(.+)$/);
+          if (gm) {
+            // URL complète ou chemin contenant /generated/
+            filePath = path.join(GENERATED_DIR, gm[1]);
+          } else if (vurl.includes('/') && vurl.endsWith('.mp4')) {
+            // référence relative <sub>/<file>.mp4
+            filePath = path.join(GENERATED_DIR, vurl);
+          }
+          // fallback : nom de fichier seul, ou fichier introuvable → chercher le mp4 le plus récent du user
+          if (!filePath || !fs.existsSync(filePath)) {
+            const sub = (ctx && ctx.userId) ? String(ctx.userId).replace(/[^a-zA-Z0-9-]/g, '') : 'shared';
+            const dir = path.join(GENERATED_DIR, sub);
+            const wanted = vurl.split('/').pop();
+            let candidate = null;
+            try {
+              const mp4s = fs.readdirSync(dir).filter(f => f.endsWith('.mp4'));
+              if (wanted && mp4s.includes(wanted)) candidate = path.join(dir, wanted);
+              else if (mp4s.length) {
+                // le plus récemment modifié
+                candidate = mp4s.map(f => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+                                .sort((a, b) => b.t - a.t)[0];
+                candidate = path.join(dir, candidate.f);
+              }
+            } catch (_) {}
+            if (candidate && fs.existsSync(candidate)) filePath = candidate;
+          }
+          if (!filePath || !fs.existsSync(filePath)) {
+            throw new Error("Vidéo introuvable. Utilise d'abord make_short, puis recopie sa RÉFÉRENCE VIDÉO exacte dans video_url.");
+          }
           const size = fs.statSync(filePath).size;
           // 2) init en FILE_UPLOAD (une seule part couvrant tout le fichier)
           const init = await tiktokPost(data, persist, '/v2/post/publish/video/init/', {
