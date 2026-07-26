@@ -75,7 +75,7 @@ const HTTP_PARAMS = {
   required: ['method', 'path']
 };
 
-function makeServiceTool(id, name, cfg, data) {
+function makeServiceTool(id, name, cfg, data, ctx) {
   // cfg: { base|baseFn, auth: 'bearer'|['header','X-Key']|['query','key'], extraHeaders, bodyMode, hint }
   const base = typeof cfg.base === 'function' ? cfg.base(data) : cfg.base;
   return {
@@ -85,9 +85,10 @@ function makeServiceTool(id, name, cfg, data) {
     run: async (args) => {
       const headers = { 'Content-Type': 'application/json', ...(cfg.extraHeaders || {}) };
       let query = args.query || {};
-      if (cfg.auth === 'bearer') headers['Authorization'] = `Bearer ${data.token}`;
-      else if (Array.isArray(cfg.auth) && cfg.auth[0] === 'header') headers[cfg.auth[1]] = data.token;
-      else if (Array.isArray(cfg.auth) && cfg.auth[0] === 'query') query = { ...query, [cfg.auth[1]]: data.token };
+      const tok = cfg.prepare ? await cfg.prepare(data, ctx && ctx.persist) : data.token;
+      if (cfg.auth === 'bearer') headers['Authorization'] = `Bearer ${tok}`;
+      else if (Array.isArray(cfg.auth) && cfg.auth[0] === 'header') headers[cfg.auth[1]] = tok;
+      else if (Array.isArray(cfg.auth) && cfg.auth[0] === 'query') query = { ...query, [cfg.auth[1]]: tok };
       if (cfg.authExtra) Object.assign(headers, cfg.authExtra(data));
       const url = buildUrl(base, args.path, query);
       let body;
@@ -507,14 +508,38 @@ const PRESETS = [
   },
   {
     id: 'shopify', name: 'Shopify', icon: '🛍️', category: 'E-commerce',
-    base: (d) => `https://${String(d.shopDomain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '')}/admin/api/2024-10`,
+    base: (d) => `https://${String(d.shopDomain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '')}/admin/api/2026-01`,
     auth: ['header', 'X-Shopify-Access-Token'],
     fields: [
       { key: 'shopDomain', label: 'Domaine de la boutique', placeholder: 'maboutique.myshopify.com', required: true },
-      { key: 'token', label: 'Token d\'accès Admin API', type: 'password', required: true }
+      { key: 'client_id', label: "ID client (app du Dev Dashboard)", placeholder: '882ef5d5acbf…' },
+      { key: 'client_secret', label: 'Secret client (shpss_…)', type: 'password' },
+      { key: 'token', label: "Token d'accès permanent (ancien système, si tu en as un)", type: 'password' }
     ],
+    prepare: async (d, persist) => {
+      // Ancien système : token permanent shpat_ collé à la main
+      if (!d.client_id || !d.client_secret) {
+        if (d.token) return d.token;
+        throw new Error("Identifiant Shopify incomplet : renseigne soit l'ID client + Secret client (app du Dev Dashboard, système 2026), soit un token d'accès permanent (ancien système).");
+      }
+      // Nouveau système (2026) : Client Credentials Grant — le token expire toutes les 24 h, on le renouvelle tout seul
+      const soon = Date.now() + 10 * 60 * 1000;
+      if (d.access_token && d.token_expiry && d.token_expiry > soon) return d.access_token;
+      const domain = String(d.shopDomain || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+      const r = await doFetch(`https://${domain}/admin/oauth/access_token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: d.client_id, client_secret: d.client_secret, grant_type: 'client_credentials' })
+      });
+      let j; try { j = JSON.parse(r.text); } catch { throw new Error('Réponse Shopify illisible : ' + String(r.text).slice(0, 200)); }
+      if (!j.access_token) throw new Error('Shopify a refusé le Client Credentials Grant : ' + (j.error_description || j.error || String(r.text).slice(0, 200)) + " — vérifie que l'app du Dev Dashboard a bien les scopes read_products/write_products, une distribution Custom vers cette boutique, et qu'elle est INSTALLÉE sur la boutique.");
+      d.access_token = j.access_token;
+      d.token_expiry = Date.now() + (Number(j.expires_in || 86400) * 1000);
+      if (persist) persist({ access_token: d.access_token, token_expiry: d.token_expiry });
+      return d.access_token;
+    },
     hint: 'Endpoints : GET /products.json · POST /products.json · GET /orders.json',
-    description: 'Admin API Shopify : produits, commandes, clients.'
+    description: "Admin API Shopify : produits, commandes, clients. Système 2026 : colle l'ID client + Secret client de ton app Dev Dashboard (le token de 24 h se renouvelle tout seul)."
   },
   {
     id: 'stripe', name: 'Stripe', icon: '💳', category: 'E-commerce',
@@ -567,7 +592,7 @@ for (const p of PRESETS) {
     id: p.id, name: p.name, icon: p.icon, category: p.category,
     description: p.description,
     fields: p.fields || [{ key: 'token', label: 'Token / Clé API', type: 'password', required: true }],
-    buildTools(data) { return [makeServiceTool(p.id, p.name, p, data)]; }
+    buildTools(data, ctx) { return [makeServiceTool(p.id, p.name, p, data, ctx)]; }
   });
 }
 
