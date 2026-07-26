@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Outils de build pour better-sqlite3 (si pas de binaire précompilé dispo)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
+  && apt-get install -y --no-install-recommends python3 make g++ ffmpeg fonts-dejavu-core \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./

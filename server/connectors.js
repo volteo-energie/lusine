@@ -811,6 +811,203 @@ register({
   }
 });
 
+
+/* ---------- Studio vidéo local (FFmpeg) : shorts produits gratuits ---------- */
+const { execFile } = require('child_process');
+const os = require('os');
+
+function ffmpegFont() {
+  const candidates = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf',
+    '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf'
+  ];
+  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return candidates[0];
+}
+
+function runFfmpeg(args, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    execFile('ffmpeg', args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, _out, stderr) => {
+      if (err) return reject(new Error('FFmpeg a échoué : ' + String(stderr || err.message).slice(-400)));
+      resolve();
+    });
+  });
+}
+
+function saveGeneratedFile(localPath, ext, userId) {
+  const sub = userId ? String(userId).replace(/[^a-zA-Z0-9-]/g, '') : 'shared';
+  const dir = path.join(GENERATED_DIR, sub);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `${Date.now().toString(36)}-${crypto.randomBytes(5).toString('hex')}.${ext}`;
+  fs.copyFileSync(localPath, path.join(dir, file));
+  const base = publicBase();
+  const rel = `/generated/${sub}/${file}`;
+  return base ? `${base}${rel}` : rel;
+}
+
+register({
+  id: 'video_studio', name: 'Studio vidéo (local)', icon: '🎬', category: 'Création',
+  description: "Fabrique des shorts verticaux 9:16 (TikTok/Reels) à partir des images produit : zoom lent, textes en overlay, fondus. 100 % local (FFmpeg sur ton serveur), gratuit et illimité. Aucun réglage : clique juste Créer.",
+  fields: [],
+  buildTools(data, ctx) {
+    return [{
+      name: 'make_short',
+      description: "Compose un short vidéo vertical 1080x1920 à partir d'images (URLs) et de textes affichés à l'écran (un segment de 4 s par texte, 4 max). Renvoie l'URL publique du MP4 généré.",
+      parameters: {
+        type: 'object',
+        properties: {
+          image_urls: { type: 'array', items: { type: 'string' }, description: "URLs des images produit (1 à 4). Si moins d'images que de textes, elles sont réutilisées." },
+          captions: { type: 'array', items: { type: 'string' }, description: "Textes affichés à l'écran, dans l'ordre (1 à 4, courts — max ~60 caractères chacun)." }
+        },
+        required: ['image_urls', 'captions']
+      },
+      run: async (args) => {
+        const urls = (args.image_urls || []).filter(u => /^https?:\/\//.test(String(u))).slice(0, 4);
+        const caps = (args.captions || []).map(c => String(c).slice(0, 90)).filter(Boolean).slice(0, 4);
+        if (!urls.length) throw new Error('Aucune URL d\'image valide fournie.');
+        if (!caps.length) throw new Error('Aucun texte fourni.');
+        const work = fs.mkdtempSync(path.join(os.tmpdir(), 'vshort-'));
+        try {
+          // 1) télécharger les images
+          const imgs = [];
+          for (let i = 0; i < urls.length; i++) {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 30000);
+            let resp;
+            try { resp = await fetch(urls[i], { signal: ctrl.signal }); }
+            finally { clearTimeout(timer); }
+            if (!resp.ok) throw new Error(`Téléchargement impossible de l'image ${i + 1} (HTTP ${resp.status})`);
+            const p = path.join(work, `img_${i}`);
+            fs.writeFileSync(p, Buffer.from(await resp.arrayBuffer()));
+            imgs.push(p);
+          }
+          const font = ffmpegFont();
+          // 2) un segment de 4 s par texte
+          const segs = [];
+          for (let i = 0; i < caps.length; i++) {
+            const img = imgs[i % imgs.length];
+            const txt = path.join(work, `cap_${i}.txt`);
+            fs.writeFileSync(txt, caps[i]);
+            const seg = path.join(work, `seg_${i}.mp4`);
+            const vf = [
+              "scale=1080:1920:force_original_aspect_ratio=increase",
+              "crop=1080:1920",
+              "zoompan=z='min(zoom+0.0012,1.10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=100:s=1080x1920:fps=25",
+              `drawtext=fontfile=${font}:textfile=${txt}:fontcolor=white:fontsize=56:line_spacing=10:box=1:boxcolor=black@0.45:boxborderw=26:x=(w-text_w)/2:y=h-text_h-260`,
+              "fade=t=in:st=0:d=0.35",
+              "fade=t=out:st=3.65:d=0.35"
+            ].join(',');
+            await runFfmpeg(['-y', '-loop', '1', '-framerate', '25', '-i', img, '-vf', vf, '-t', '4', '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', seg]);
+            segs.push(seg);
+          }
+          // 3) concat + piste audio silencieuse (compatibilité maximale)
+          const list = path.join(work, 'list.txt');
+          fs.writeFileSync(list, segs.map(s => `file '${s}'`).join('\n'));
+          const out = path.join(work, 'short.mp4');
+          await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', list, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest', '-c:v', 'copy', '-c:a', 'aac', out]);
+          const url = saveGeneratedFile(out, 'mp4', ctx && ctx.userId);
+          const secs = caps.length * 4;
+          return `Short généré (${secs} s, 1080x1920) : ${url}`;
+        } finally {
+          try { fs.rmSync(work, { recursive: true, force: true }); } catch {}
+        }
+      }
+    }];
+  }
+});
+
+/* ---------- TikTok officiel (Content Posting API) ---------- */
+const TIKTOK_API = 'https://open.tiktokapis.com';
+
+async function tiktokEnsureToken(d, persist) {
+  if (!d.client_key || !d.client_secret) throw new Error("Identifiant TikTok incomplet : renseigne la Client key et le Client secret de ton app developers.tiktok.com.");
+  const soon = Date.now() + 5 * 60 * 1000;
+  if (d.access_token && d.token_expiry && d.token_expiry > soon) return d.access_token;
+  if (!d.refresh_token) throw new Error("Compte TikTok non connecté : ouvre cet identifiant et clique « Connecter TikTok » (fenêtre d'autorisation).");
+  const r = await doFetch(`${TIKTOK_API}/v2/oauth/token/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_key: d.client_key, client_secret: d.client_secret,
+      grant_type: 'refresh_token', refresh_token: d.refresh_token
+    }).toString()
+  }, 20000);
+  let j; try { j = JSON.parse(r.text); } catch { throw new Error('Réponse TikTok illisible : ' + String(r.text).slice(0, 200)); }
+  if (!j.access_token) throw new Error('Rafraîchissement TikTok refusé : ' + (j.error_description || j.error || String(r.text).slice(0, 200)));
+  d.access_token = j.access_token;
+  if (j.refresh_token) d.refresh_token = j.refresh_token;
+  d.token_expiry = Date.now() + (Number(j.expires_in || 86400) * 1000);
+  if (persist) persist({ access_token: d.access_token, refresh_token: d.refresh_token, token_expiry: d.token_expiry });
+  return d.access_token;
+}
+
+async function tiktokPost(d, persist, pathName, body) {
+  const tok = await tiktokEnsureToken(d, persist);
+  const r = await doFetch(`${TIKTOK_API}${pathName}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${tok}`, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify(body || {})
+  }, 30000);
+  let j; try { j = JSON.parse(r.text); } catch { return trunc(r.text); }
+  if (j.error && j.error.code && j.error.code !== 'ok') {
+    throw new Error(`TikTok a refusé (${j.error.code}) : ${j.error.message || ''}`);
+  }
+  return j.data || j;
+}
+
+register({
+  id: 'tiktok', name: 'TikTok (officiel)', icon: '🎵', category: 'Réseaux sociaux',
+  description: "Publication officielle et gratuite sur TikTok (Content Posting API). Colle la Client key + le Client secret de ton app developers.tiktok.com, connecte ton compte (fenêtre d'autorisation), et tes agents publient des vidéos. Tant que l'app TikTok n'est pas auditée, les vidéos sont en visibilité privée (SELF_ONLY).",
+  fields: [
+    { key: 'client_key', label: 'Client key (app developers.tiktok.com)', required: true },
+    { key: 'client_secret', label: 'Client secret', type: 'password', required: true },
+    { key: 'default_privacy', label: 'Visibilité par défaut (SELF_ONLY tant que l\'app n\'est pas auditée, puis PUBLIC_TO_EVERYONE)', placeholder: 'SELF_ONLY' }
+  ],
+  buildTools(data, ctx) {
+    const persist = ctx && ctx.persist;
+    return [
+      {
+        name: 'tiktok_creator_info',
+        description: "Infos du compte TikTok connecté (pseudo, visibilités autorisées, durée max des vidéos). À appeler avant de publier.",
+        parameters: { type: 'object', properties: {} },
+        run: async () => trunc(JSON.stringify(await tiktokPost(data, persist, '/v2/post/publish/creator_info/query/', {})))
+      },
+      {
+        name: 'tiktok_publish_from_url',
+        description: "Publie une vidéo TikTok depuis une URL publique (le serveur TikTok télécharge la vidéo). Renvoie un publish_id à surveiller avec tiktok_publish_status.",
+        parameters: {
+          type: 'object',
+          properties: {
+            video_url: { type: 'string', description: 'URL publique directe du MP4 (domaine vérifié dans l\'app TikTok)' },
+            title: { type: 'string', description: 'Légende du post (max 150 caractères, hashtags inclus)' }
+          },
+          required: ['video_url', 'title']
+        },
+        run: async (args) => {
+          const privacy = String(data.default_privacy || 'SELF_ONLY').trim() || 'SELF_ONLY';
+          const res = await tiktokPost(data, persist, '/v2/post/publish/video/init/', {
+            post_info: {
+              title: String(args.title || '').slice(0, 150),
+              privacy_level: privacy,
+              disable_comment: false, disable_duet: false, disable_stitch: false,
+              video_cover_timestamp_ms: 1000
+            },
+            source_info: { source: 'PULL_FROM_URL', video_url: String(args.video_url || '') }
+          });
+          return trunc(JSON.stringify(res));
+        }
+      },
+      {
+        name: 'tiktok_publish_status',
+        description: "Statut d'une publication TikTok (PROCESSING_DOWNLOAD / PROCESSING_UPLOAD / PUBLISH_COMPLETE / FAILED) à partir de son publish_id.",
+        parameters: { type: 'object', properties: { publish_id: { type: 'string' } }, required: ['publish_id'] },
+        run: async (args) => trunc(JSON.stringify(await tiktokPost(data, persist, '/v2/post/publish/status/fetch/', { publish_id: String(args.publish_id || '') })))
+      }
+    ];
+  }
+});
+
 function buildToolsForCredential(type, data, ctx) {
   const t = TYPES[type];
   if (!t) return [];

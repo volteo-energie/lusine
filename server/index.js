@@ -183,6 +183,75 @@ fastify.register(async (scope) => {
 });
 
 
+
+/* ---------- OAuth TikTok (Login Kit) : connexion du compte pour la publication ---------- */
+const tiktokPending = new Map(); // state -> { credId, userId, createdAt }
+setInterval(() => {
+  const cut = Date.now() - 10 * 60 * 1000;
+  for (const [k, v] of tiktokPending) if (v.createdAt < cut) tiktokPending.delete(k);
+}, 60 * 1000).unref();
+
+fastify.get('/api/oauth/tiktok/:credId/start', async (req, reply) => {
+  const uid = currentUserId(req);
+  const row = db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?').get(req.params.credId, uid);
+  if (!row || row.type !== 'tiktok') return reply.code(404).send({ error: 'Identifiant TikTok introuvable' });
+  let data = {};
+  try { data = JSON.parse(decrypt(row.data_enc)); } catch {}
+  if (!data.client_key) return reply.code(400).send({ error: "Renseigne d'abord la Client key et le Client secret dans l'identifiant." });
+  const state = require('crypto').randomBytes(18).toString('hex');
+  tiktokPending.set(state, { credId: row.id, userId: uid, createdAt: Date.now() });
+  const base = (process.env.LUSINE_PUBLIC_URL || '').replace(/\/+$/, '');
+  const u = new URL('https://www.tiktok.com/v2/auth/authorize/');
+  u.searchParams.set('client_key', data.client_key);
+  u.searchParams.set('scope', 'user.info.basic,video.publish');
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('redirect_uri', `${base}/api/oauth/tiktok/callback`);
+  u.searchParams.set('state', state);
+  return reply.redirect(u.toString());
+});
+
+fastify.get('/api/oauth/tiktok/callback', async (req, reply) => {
+  const page = (title, body, ok) => `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:system-ui;background:#12131a;color:#ecedf3;display:grid;place-items:center;height:100vh;margin:0}
+.card{max-width:440px;text-align:center;padding:40px;background:#1b1c26;border-radius:16px;border:1px solid rgba(255,255,255,.1)}
+.big{font-size:44px;margin-bottom:14px}</style></head>
+<body><div class="card"><div class="big">${ok ? '✅' : '❌'}</div><h2>${title}</h2><p style="color:#9ea0b4">${body}</p></div>
+<script>try{window.opener&&window.opener.postMessage({lusineOauth:${ok ? "'done'" : "'error'"}},'*')}catch(e){}
+setTimeout(()=>window.close(), ${ok ? 1800 : 6000});</script></body></html>`;
+
+  const { code, state, error, error_description } = req.query || {};
+  if (error) return reply.type('text/html').send(page('Connexion refusée', String(error_description || error), false));
+  const p = tiktokPending.get(state);
+  if (!p || !code) return reply.type('text/html').send(page('Session expirée', "Relance la connexion depuis L'usine.", false));
+  tiktokPending.delete(state);
+  try {
+    const row = db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?').get(p.credId, p.userId);
+    if (!row) throw new Error('Identifiant introuvable');
+    let data = {};
+    try { data = JSON.parse(decrypt(row.data_enc)); } catch {}
+    const base = (process.env.LUSINE_PUBLIC_URL || '').replace(/\/+$/, '');
+    const r = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_key: data.client_key, client_secret: data.client_secret,
+        code, grant_type: 'authorization_code',
+        redirect_uri: `${base}/api/oauth/tiktok/callback`
+      }).toString()
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!j.access_token) throw new Error(j.error_description || j.error || 'Echange de code refuse par TikTok');
+    data.access_token = j.access_token;
+    data.refresh_token = j.refresh_token || null;
+    data.open_id = j.open_id || null;
+    data.token_expiry = Date.now() + (Number(j.expires_in || 86400) * 1000);
+    db.prepare('UPDATE credentials SET data_enc = ? WHERE id = ?').run(encrypt(JSON.stringify(data)), p.credId);
+    return reply.type('text/html').send(page('Compte TikTok connecté !', 'Tes agents peuvent maintenant publier. Cette fenêtre va se fermer.', true));
+  } catch (e) {
+    return reply.type('text/html').send(page('Échec de la connexion', e.message, false));
+  }
+});
+
 /* ---------- MCP : probe (inventaire des outils) + OAuth universel ---------- */
 const mcpClient = require('./mcp');
 const mcpPending = new Map(); // state → { credId, userId, verifier, meta, clientId, clientSecret, createdAt }
@@ -294,7 +363,7 @@ fastify.get('/api/bootstrap', async (req) => {
   const uid = currentUserId(req);
   let email = null;
   if (uid) email = db.prepare('SELECT email FROM users WHERE id = ?').get(uid)?.email || null;
-  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.10.0' };
+  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.11.0' };
 });
 
 fastify.post('/api/auth/register', async (req, reply) => {

@@ -200,6 +200,17 @@ function renderShell(active, content) {
    ================================================================ */
 
 
+
+/* ---- TikTok : ouvre la fenêtre d'autorisation après sauvegarde ---- */
+function connectTiktokCredential(credId, onSaved) {
+  toast('Connexion TikTok — autorise dans la fenêtre', '');
+  const pop = window.open(`/api/oauth/tiktok/${credId}/start`, 'lusine-tiktok-oauth', 'width=680,height=820');
+  const done = () => { window.removeEventListener('message', onMsg); clearInterval(iv); toast('Si la fenêtre a affiché ✅, ton compte TikTok est relié', 'success'); onSaved && onSaved(credId); };
+  const onMsg = (ev) => { if (ev.data && ev.data.lusineOauth) done(); };
+  window.addEventListener('message', onMsg);
+  const iv = setInterval(() => { if (pop && pop.closed) done(); }, 800);
+}
+
 /* ---- MCP : sonde le serveur, ouvre l'OAuth si demandé, rapporte les outils ---- */
 async function probeMcpCredential(credId, onSaved) {
   toast('🔌 Connexion au serveur MCP…', '');
@@ -611,11 +622,13 @@ function openCredentialModal({ typeId, existing, onSaved } = {}) {
         const r = await API.post('/api/credentials', { name, type: t.id, data });
         m.close();
         if (t.id === 'mcp') { await probeMcpCredential(r.id, onSaved); }
+        else if (t.id === 'tiktok') { connectTiktokCredential(r.id, onSaved); }
         else { toast('Identifiant créé', 'success'); onSaved && onSaved(r.id); }
       } else {
         await API.put(`/api/credentials/${existing.id}`, { name, data });
         m.close();
         if (t.id === 'mcp') { await probeMcpCredential(existing.id, onSaved); }
+        else if (t.id === 'tiktok') { connectTiktokCredential(existing.id, onSaved); }
         else { toast('Identifiant mis à jour', 'success'); onSaved && onSaved(existing.id); }
       }
     } catch (e) { $('#c-err', m.el).textContent = e.message; }
