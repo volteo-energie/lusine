@@ -182,6 +182,109 @@ fastify.register(async (scope) => {
   });
 });
 
+
+/* ---------- MCP : probe (inventaire des outils) + OAuth universel ---------- */
+const mcpClient = require('./mcp');
+const mcpPending = new Map(); // state → { credId, userId, verifier, meta, clientId, clientSecret, createdAt }
+setInterval(() => {
+  const cut = Date.now() - 10 * 60 * 1000;
+  for (const [k, v] of mcpPending) if (v.createdAt < cut) mcpPending.delete(k);
+}, 60 * 1000).unref();
+
+function mcpRedirectUri() {
+  const base = (process.env.LUSINE_PUBLIC_URL || '').replace(/\/+$/, '');
+  return `${base}/api/oauth/mcp/callback`;
+}
+
+function loadCred(credId, userId) {
+  const row = db.prepare('SELECT * FROM credentials WHERE id = ? AND user_id = ?').get(credId, userId);
+  if (!row || row.type !== 'mcp') return null;
+  let data = {};
+  try { data = JSON.parse(decrypt(row.data_enc)); } catch {}
+  return { row, data };
+}
+
+function saveCredData(credId, data) {
+  db.prepare('UPDATE credentials SET data_enc = ? WHERE id = ?').run(encrypt(JSON.stringify(data)), credId);
+}
+
+fastify.post('/api/mcp/probe', async (req, reply) => {
+  const uid = currentUserId(req);
+  const { credentialId } = req.body || {};
+  const c = loadCred(credentialId, uid);
+  if (!c) return reply.code(404).send({ error: 'Identifiant MCP introuvable' });
+  if (!c.data.url || !/^https?:\/\//.test(c.data.url)) return reply.code(400).send({ error: "URL du serveur MCP invalide (elle doit commencer par https://)" });
+
+  try {
+    const token = await mcpClient.ensureFreshToken(c.data, (patch) => { Object.assign(c.data, patch); saveCredData(credentialId, c.data); });
+    const { tools, serverInfo } = await mcpClient.connect(c.data.url, token);
+    c.data.tools = tools;
+    c.data.serverInfo = serverInfo;
+    saveCredData(credentialId, c.data);
+    return { ok: true, toolsCount: tools.length, tools: tools.map(t => t.name) };
+  } catch (e) {
+    if (e.code !== 'AUTH_REQUIRED') {
+      return reply.code(502).send({ error: `Connexion au serveur MCP impossible : ${e.message}` });
+    }
+    // ---- OAuth requis : découverte + enregistrement dynamique + URL d'autorisation ----
+    try {
+      const meta = await mcpClient.discoverAuth(c.data.url, e.wwwAuthenticate);
+      let clientId = c.data.oauth?.client_id, clientSecret = c.data.oauth?.client_secret || null;
+      if (!clientId) {
+        const reg = await mcpClient.registerClient(meta, mcpRedirectUri());
+        clientId = reg.client_id; clientSecret = reg.client_secret;
+      }
+      const scope = (meta.scopes_supported || []).join(' ') || undefined;
+      const { url, state, verifier } = mcpClient.buildAuthRequest({ meta, clientId, redirectUri: mcpRedirectUri(), scope });
+      mcpPending.set(state, { credId: credentialId, userId: uid, verifier, meta, clientId, clientSecret, createdAt: Date.now() });
+      // mémorise la config OAuth découverte (sans tokens pour l'instant)
+      c.data.oauth = { ...(c.data.oauth || {}), client_id: clientId, client_secret: clientSecret,
+        token_endpoint: meta.token_endpoint, authorization_endpoint: meta.authorization_endpoint, resource: meta.resource };
+      saveCredData(credentialId, c.data);
+      return { needsAuth: true, authUrl: url };
+    } catch (e2) {
+      return reply.code(502).send({ error: e2.message });
+    }
+  }
+});
+
+fastify.get('/api/oauth/mcp/callback', async (req, reply) => {
+  const page = (title, body, ok) => `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:system-ui;background:#12131a;color:#ecedf3;display:grid;place-items:center;height:100vh;margin:0}
+.card{max-width:440px;text-align:center;padding:40px;background:#1b1c26;border-radius:16px;border:1px solid rgba(255,255,255,.1)}
+.big{font-size:44px;margin-bottom:14px}</style></head>
+<body><div class="card"><div class="big">${ok ? '✅' : '❌'}</div><h2>${title}</h2><p style="color:#9ea0b4">${body}</p></div>
+<script>try{window.opener&&window.opener.postMessage({lusineOauth:${ok ? "'done'" : "'error'"}},'*')}catch(e){}
+setTimeout(()=>window.close(), ${ok ? 1800 : 6000});</script></body></html>`;
+
+  const { code, state, error, error_description } = req.query || {};
+  if (error) return reply.type('text/html').send(page('Connexion refusée', String(error_description || error), false));
+  const p = mcpPending.get(state);
+  if (!p || !code) return reply.type('text/html').send(page('Session expirée', 'Relance la connexion depuis L\'usine.', false));
+  mcpPending.delete(state);
+  try {
+    const tokens = await mcpClient.exchangeCode({ meta: p.meta, clientId: p.clientId, clientSecret: p.clientSecret, code, verifier: p.verifier, redirectUri: mcpRedirectUri() });
+    const c = loadCred(p.credId, p.userId);
+    if (!c) throw new Error('Identifiant introuvable');
+    c.data.oauth = {
+      client_id: p.clientId, client_secret: p.clientSecret,
+      token_endpoint: p.meta.token_endpoint, authorization_endpoint: p.meta.authorization_endpoint, resource: p.meta.resource,
+      access_token: tokens.access_token, refresh_token: tokens.refresh_token || null,
+      token_expiry: Date.now() + (Number(tokens.expires_in || 3600) * 1000)
+    };
+    // inventaire des outils dans la foulée
+    try {
+      const { tools, serverInfo } = await mcpClient.connect(c.data.url, tokens.access_token);
+      c.data.tools = tools; c.data.serverInfo = serverInfo;
+    } catch (_) {}
+    saveCredData(p.credId, c.data);
+    const n = (c.data.tools || []).length;
+    return reply.type('text/html').send(page('Serveur MCP connecté !', n ? `${n} outil(s) détecté(s). Cette fenêtre va se fermer.` : 'Autorisation enregistrée. Cette fenêtre va se fermer.', true));
+  } catch (e) {
+    return reply.type('text/html').send(page('Échec de la connexion', e.message, false));
+  }
+});
+
 /* ---------- Bootstrap & Auth ---------- */
 const SIGNUP_CODE = process.env.LUSINE_SIGNUP_CODE || '';
 function validEmail(e) { return typeof e === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e); }
@@ -191,7 +294,7 @@ fastify.get('/api/bootstrap', async (req) => {
   const uid = currentUserId(req);
   let email = null;
   if (uid) email = db.prepare('SELECT email FROM users WHERE id = ?').get(uid)?.email || null;
-  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.7.0' };
+  return { needsSetup: !hasUser, authed: !!uid, email, signupGated: !!SIGNUP_CODE, version: '3.8.0' };
 });
 
 fastify.post('/api/auth/register', async (req, reply) => {

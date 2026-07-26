@@ -100,7 +100,7 @@ function buildAgentTools(credentialIds = [], userId) {
         db.prepare('UPDATE credentials SET data_enc = ? WHERE id = ?').run(encrypt(JSON.stringify(data)), row.id);
       } catch (_) { /* best effort */ }
     };
-    for (const tool of buildToolsForCredential(row.type, data, { userId, persist })) {
+    for (const tool of buildToolsForCredential(row.type, data, { userId, persist, credKey: row.id })) {
       let name = tool.name, i = 2;
       while (seen.has(name)) name = `${tool.name}_${i++}`;
       seen.add(name);

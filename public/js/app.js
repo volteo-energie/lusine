@@ -199,6 +199,38 @@ function renderShell(active, content) {
    ACCUEIL — LISTE DES WORKFLOWS
    ================================================================ */
 
+
+/* ---- MCP : sonde le serveur, ouvre l'OAuth si demandé, rapporte les outils ---- */
+async function probeMcpCredential(credId, onSaved) {
+  toast('🔌 Connexion au serveur MCP…', '');
+  try {
+    const r = await API.post('/api/mcp/probe', { credentialId: credId });
+    if (r.ok) {
+      toast(`🔌 ${r.toolsCount} outil(s) détecté(s) — tes agents peuvent les utiliser`, 'success');
+      onSaved && onSaved(credId);
+      return;
+    }
+    if (r.needsAuth && r.authUrl) {
+      toast('Autorisation demandée par le serveur — connecte-toi dans la fenêtre', '');
+      const pop = window.open(r.authUrl, 'lusine-mcp-oauth', 'width=680,height=780');
+      const finish = async () => {
+        const r2 = await API.post('/api/mcp/probe', { credentialId: credId }).catch(() => null);
+        if (r2 && r2.ok) toast(`🔌 Connecté : ${r2.toolsCount} outil(s) détecté(s)`, 'success');
+        else toast("L'autorisation n'a pas abouti — réessaie en modifiant l'identifiant", 'error');
+        onSaved && onSaved(credId);
+      };
+      const onMsg = (ev) => {
+        if (ev.data && ev.data.lusineOauth) { window.removeEventListener('message', onMsg); clearInterval(iv); finish(); }
+      };
+      window.addEventListener('message', onMsg);
+      const iv = setInterval(() => { if (pop && pop.closed) { clearInterval(iv); window.removeEventListener('message', onMsg); finish(); } }, 800);
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    onSaved && onSaved(credId);
+  }
+}
+
 async function openTemplatePicker() {
   const templates = await API.get('/api/templates');
   const m = openModal(`
@@ -577,10 +609,14 @@ function openCredentialModal({ typeId, existing, onSaved } = {}) {
       if (!existing) {
         for (const f of t.fields) if (f.required && !data[f.key]) throw new Error(`Champ requis : ${f.label}`);
         const r = await API.post('/api/credentials', { name, type: t.id, data });
-        m.close(); toast('Identifiant créé', 'success'); onSaved && onSaved(r.id);
+        m.close();
+        if (t.id === 'mcp') { await probeMcpCredential(r.id, onSaved); }
+        else { toast('Identifiant créé', 'success'); onSaved && onSaved(r.id); }
       } else {
         await API.put(`/api/credentials/${existing.id}`, { name, data });
-        m.close(); toast('Identifiant mis à jour', 'success'); onSaved && onSaved(existing.id);
+        m.close();
+        if (t.id === 'mcp') { await probeMcpCredential(existing.id, onSaved); }
+        else { toast('Identifiant mis à jour', 'success'); onSaved && onSaved(existing.id); }
       }
     } catch (e) { $('#c-err', m.el).textContent = e.message; }
   });

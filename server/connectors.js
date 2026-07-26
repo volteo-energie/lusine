@@ -758,6 +758,31 @@ function listTypes() {
   }));
 }
 
+
+/* ---------- MCP : serveur d'outils universel ---------- */
+const mcp = require('./mcp');
+
+register({
+  id: 'mcp', name: 'Serveur MCP (universel)', icon: '🔌', category: 'Cœur',
+  description: "Branche n'importe quel serveur MCP (Model Context Protocol) : colle son URL, autorise l'accès si demandé (OAuth automatique, aucune clé à créer), et tous ses outils deviennent disponibles pour tes agents. Exemple : https://mcp.dsers.com/dropshipping/mcp",
+  fields: [
+    { key: 'url', label: 'URL du serveur MCP', placeholder: 'https://mcp.exemple.com/mcp' }
+  ],
+  buildTools(data, ctx) {
+    const cached = Array.isArray(data.tools) ? data.tools : [];
+    const credKey = (ctx && ctx.credKey) || data.url || 'mcp';
+    return cached.map(t => ({
+      name: t.name,
+      description: `[MCP] ${t.description || t.name}`,
+      parameters: t.inputSchema || { type: 'object', properties: {} },
+      run: async (args) => {
+        const result = await mcp.callTool(data, credKey, t.name, args, ctx && ctx.persist);
+        return trunc(mcp.contentToText(result));
+      }
+    }));
+  }
+});
+
 function buildToolsForCredential(type, data, ctx) {
   const t = TYPES[type];
   if (!t) return [];
