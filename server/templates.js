@@ -144,61 +144,86 @@ Envoie-la par email avec ton outil SMTP : objet "📊 Rapport hebdo — semaine 
   ,{
     id: 'gadgets-dropshipping',
     icon: '🧲',
-    name: 'Gadgets Quotidien+ (dropshipping DSers)',
-    description: "Trouve des gadgets utiles qui font gagner du temps (AliExpress), prépare des offres et fiches irrésistibles, puis embellit les produits importés par DSers dans ta boutique Shopify. Pause de validation intégrée pour l'import DSers.",
-    connectors: ['HTTP / API générique (Apify)', 'Shopify (custom app token)', 'App DSers installée sur la boutique'],
+    name: 'Gadgets Quotidien+ (DSers autonome)',
+    description: "La chaîne dropshipping 100 % autonome, sans aucune intervention : recherche dans le vrai catalogue AliExpress via DSers, fiches travaillées, import + prix + push, puis un agent Contrôleur qualité vérifie chaque produit (marge, stock, fiche, interdits) et publie — ou retient — à ta place.",
+    connectors: ['Serveur MCP (universel) → https://mcp.dsers.com/dropshipping/mcp', 'Shopify (custom app token)'],
     data: {
       nodes: [
-        { id: 'g1', name: 'Chasseur de gagnants', x: 60, y: 200, config: { icon: '🔎', color: '#4f9cf9', temperature: 0.4, maxIterations: 10, retries: 2, retryDelay: 5, mission:
-`Tu es dénicheur de produits gagnants pour une boutique dont la promesse est « tout ce qui rend le quotidien plus beau et plus facile ». Objectif : trouver des gadgets utiles, sourcés en Chine, qui se vendent VITE parce qu'ils font gagner du temps ou réduisent la fatigue au quotidien (cuisine, ménage, rangement, salle de bain, voiture, bureau).
+        { id: 'g1', name: 'Chasseur de gagnants', x: 60, y: 200, config: { icon: '🔎', color: '#4f9cf9', temperature: 0.4, maxIterations: 12, retries: 2, retryDelay: 5, mission:
+`Tu es dénicheur de produits gagnants pour une marketplace dont la promesse est « tout ce qui rend le quotidien plus beau et plus facile ». Objectif : trouver dans le catalogue AliExpress des gadgets utiles qui se vendent VITE parce qu'ils font gagner du temps ou réduisent la fatigue (cuisine, ménage, rangement, salle de bain, voiture, bureau).
 
-TON OUTIL DE DONNÉES (Apify) : http_request avec method='POST', url='/acts/epctex~aliexpress-scraper/run-sync-get-dataset-items', timeoutMs=120000, body={"searchTerms": ["<mots-clés>"], "maxItems": 25, "shipTo": "FR", "currency": "EUR", "language": "en_US"}.
-Fais 3 recherches avec des mots-clés différents EN ANGLAIS orientés gain de temps (ex : "kitchen gadget time saving", "cleaning tool labor saving", "home organizer space saving", "bathroom gadget"). L'appel peut prendre ~1-2 minutes : c'est normal. Si l'API renvoie une erreur, rapporte-la textuellement.
+TES OUTILS (serveur DSers) : commence par dsers_store_discover pour vérifier la boutique connectée et sa devise. Puis fais 3 à 4 recherches avec dsers_find_product, mots-clés EN ANGLAIS orientés gain de temps (ex : "kitchen gadget time saving", "cleaning tool electric", "home organizer", "bathroom gadget"). Varie les univers ; adapte une recherche à la saison en cours.
 
-CRITÈRES D'UN GAGNANT : beaucoup de commandes/avis, note ≥ 4.5, prix fournisseur bas (2 à 12 €), effet « wow c'est malin » compréhensible en UNE image, bénéfice concret de temps ou d'effort économisé, facile à expédier (petit, léger, incassable).
+CRITÈRES D'UN GAGNANT : effet « wow c'est malin » compréhensible en UNE image, bénéfice concret de temps ou d'effort, petit et léger à expédier, prix fournisseur bas (2 à 12 €), bien noté. JAMAIS de produit de marque, d'objet dangereux (lames, laser), de produit à allégation santé, d'article de sécurité bébé, ni d'électrique de puissance.
 
-LIVRABLE — TOP 5 des produits classés par potentiel, avec pour CHACUN :
-- Nom court et clair (pas le titre AliExpress à rallonge)
-- Prix fournisseur constaté + prix de vente conseillé (×3 à ×4, prix psychologique en ,90)
-- Le bénéfice quotidien chiffrable honnêtement (ex : « divise le temps d'épluchage par 3 »)
-- L'URL DU PRODUIT SOURCE AliExpress (indispensable pour la suite)
-Termine par « RECOMMANDATION : les 3 à publier sont … »
+LIVRABLE — TOP 5 classé par potentiel, avec pour CHACUN :
+- Nom court et clair en français
+- Prix fournisseur constaté + PRIX DE VENTE conseillé (×3 à ×4, prix psychologique en ,90, entre 9,90 € et 59,90 €)
+- Le bénéfice quotidien formulé honnêtement (jamais de chiffre invérifiable)
+- L'URL D'IMPORT exacte retournée par dsers_find_product (recopie-la telle quelle)
+Termine par « RECOMMANDATION : les 3 à importer sont … »
 
-⚠️ Connecteur requis : coche ton identifiant HTTP générique configuré sur https://api.apify.com/v2 avec ton token Apify.` } },
+⚠️ Connecteur requis : coche ton identifiant Serveur MCP connecté à DSers.` } },
         { id: 'g2', name: "Concepteur d'offre", x: 340, y: 200, config: { icon: '🧠', color: '#9b5cff', temperature: 0.7, maxIterations: 5, mission:
-`Tu es concepteur d'offres e-commerce pour une boutique « qui rend le quotidien plus beau ». On te donne un TOP 5 de gadgets utiles avec prix, bénéfices et URLs sources.
+`Tu es concepteur d'offres e-commerce pour une marketplace « qui rend le quotidien plus beau ». On te donne un TOP 5 de gadgets avec prix, bénéfices et URLs d'import.
 
-Sélectionne les 3 MEILLEURS (impact quotidien + marge + facilité de compréhension). Pour chacun, construis l'offre : NOM DE PRODUIT français, court et désirable ; la PROMESSE principale en une phrase (bénéfice concret et crédible — jamais de chiffre invérifiable) ; 3 bénéfices secondaires ; le PRIX DE VENTE final (prix psychologique en ,90) ; à qui ça s'adresse et dans quelle situation du quotidien.
+Sélectionne les 3 MEILLEURS (impact quotidien + marge + facilité de compréhension). Pour chacun, construis l'offre : NOM DE PRODUIT français, court et désirable ; la PROMESSE principale en une phrase (bénéfice concret et crédible) ; 3 bénéfices secondaires ; le PRIX DE VENTE final (psychologique en ,90, entre 9,90 € et 59,90 €, au moins 2,5 fois le coût fournisseur) ; à qui ça s'adresse et dans quelle situation.
 
-IMPORTANT : recopie intégralement pour chaque produit son URL SOURCE AliExpress — les agents suivants en ont besoin. Classe les 3 offres de la plus forte à la moins forte.` } },
+IMPORTANT : recopie intégralement pour chaque produit son URL D'IMPORT exacte et son prix fournisseur — les agents suivants en ont besoin. Classe les 3 offres de la plus forte à la moins forte.` } },
         { id: 'g3', name: 'Rédacteur fiche', x: 620, y: 200, config: { icon: '✍️', color: '#3ee6c1', temperature: 0.7, maxIterations: 5, mission:
-`Tu es rédacteur e-commerce Shopify. On te donne 3 offres de gadgets malins avec leurs URLs sources.
+`Tu es rédacteur e-commerce Shopify. On te donne 3 offres de gadgets avec leurs URLs d'import et prix fournisseur.
 
-Commence ta réponse par un bloc bien visible :
-« 📥 À IMPORTER DANS DSERS (Import List → Push to Store en draft) : » suivi des URLs AliExpress des 3 produits, une par ligne.
-
-Puis, pour CHAQUE produit, rédige la fiche complète :
+Pour CHAQUE produit, rédige la fiche complète :
 - TITRE : le nom du produit + le bénéfice clé (60 caractères max)
-- DESCRIPTION en HTML simple (<p>, <strong>, <ul><li>) : accroche sur le problème du quotidien → la solution → liste de bénéfices → caractéristiques → réassurance. Termine par la mention : « 📦 Livraison suivie sous 7 à 15 jours ouvrés. »
+- DESCRIPTION en HTML simple (<p>, <strong>, <ul><li>) : accroche sur le problème du quotidien → la solution → liste de bénéfices → caractéristiques → réassurance. Termine par : « 📦 Livraison suivie sous 7 à 15 jours ouvrés. »
 - TAGS : 6 à 10 tags pertinents en français, en incluant OBLIGATOIREMENT le tag "darri"
-- PRIX : celui de l'offre
-- PRODUIT SOURCE : recopie le nom source et l'URL AliExpress (indispensable pour que l'agent suivant retrouve le bon brouillon).
+- PRIX DE VENTE : celui de l'offre · PRIX FOURNISSEUR : recopié de l'offre
+- URL D'IMPORT : recopie-la telle quelle.
 Ton naturel et convaincant, jamais mensonger.` } },
-        { id: 'g4', name: 'Éditeur de fiches Shopify', x: 900, y: 200, config: { icon: '🛍️', color: '#ffa24b', temperature: 0.3, maxIterations: 8, retries: 2, retryDelay: 5, onError: 'continue', loop: 'foreach', loopMaxItems: 5, loopSplitHint: 'une offre produit complète avec sa fiche et son URL source', approval: true, mission:
-`Tu es éditeur de fiches sur la boutique Shopify. Les produits ont été importés par DSers depuis AliExpress : ils existent déjà en brouillon avec les vraies images, mais leurs titres et descriptions sont bruts. Tu reçois UNE offre produit travaillée (titre français, description HTML, prix, tags, et le nom/URL du produit source).
+        { id: 'g4', name: 'Importateur DSers', x: 900, y: 200, config: { icon: '🧲', color: '#ffa24b', temperature: 0.3, maxIterations: 12, retries: 2, retryDelay: 5, onError: 'continue', loop: 'foreach', loopMaxItems: 5, loopSplitHint: "une fiche produit complète avec son URL d'import", mission:
+`Tu es responsable des imports sur la boutique. Tu reçois UNE fiche produit complète (titre, description HTML, tags, prix de vente, prix fournisseur, URL d'import).
+
+MÉTHODE, dans l'ordre :
+1. dsers_store_discover si tu ne connais pas encore l'identifiant de la boutique Shopify cible.
+2. dsers_product_import avec l'URL d'import → note l'import_item_id retourné.
+3. dsers_product_update_rules sur cet import_item_id : applique le PRIX DE VENTE exact de la fiche (règle de prix fixe) sur toutes les variantes.
+4. dsers_product_preview pour vérifier : prix appliqué, variantes, stock. Si le prix ne correspond pas, corrige avec une nouvelle règle.
+5. dsers_store_push vers la boutique Shopify en visibility_mode "backend_only" (brouillon — jamais en vente immédiate : la publication, c'est le rôle du Contrôleur en bout de chaîne).
+
+RAPPORT : import_item_id, nom du produit poussé, prix appliqué, statut du push. Puis RECOPIE INTÉGRALEMENT la fiche reçue (titre, description HTML, tags, prix de vente, prix fournisseur) — les agents suivants en ont besoin. Si une étape échoue, rapporte l'erreur exacte et n'invente rien. Ne traite jamais deux fois le même produit.
+
+⚠️ Connecteur requis : coche ton identifiant Serveur MCP connecté à DSers.` } },
+        { id: 'g5', name: 'Éditeur de fiches Shopify', x: 1180, y: 200, config: { icon: '🛍️', color: '#ff6d5a', temperature: 0.3, maxIterations: 8, retries: 2, retryDelay: 5, onError: 'continue', loop: 'foreach', loopMaxItems: 5, loopSplitHint: "un rapport d'import avec sa fiche produit", mission:
+`Tu es éditeur de fiches sur la boutique Shopify. DSers vient de pousser des produits en brouillon avec les vraies images mais des titres bruts. Tu reçois UN rapport d'import contenant la fiche travaillée (titre français, description HTML, tags).
 
 MÉTHODE :
-1. Liste les brouillons récents : GET /products.json?status=draft&limit=20&order=created_at+desc — identifie le produit correspondant à ton offre (son titre brut AliExpress ressemble au nom du produit source).
-2. Récupère son détail : GET /products/<id>.json — note l'id du produit ET l'id de sa première variante.
+1. Liste les brouillons récents : GET /products.json?status=draft&limit=20&order=created_at+desc — identifie le brouillon correspondant (son titre brut ressemble au produit du rapport).
+2. Récupère son détail : GET /products/<id>.json pour confirmer.
 3. Mets-le à jour : PUT /products/<id>.json avec ce corps :
-{"product": {"id": <id>, "title": "<ton titre>", "body_html": "<ta description HTML>", "vendor": "Quotidien+", "tags": "darri, <autres tags>", "variants": [{"id": <variant_id>, "price": "<prix, ex 19.90>"}]}}
+{"product": {"id": <id>, "title": "<ton titre>", "body_html": "<ta description HTML>", "vendor": "Quotidien+", "tags": "darri, <autres tags>"}}
 
-RÈGLES : le tag "darri" est OBLIGATOIRE. NE TOUCHE PAS aux images (elles viennent du vrai produit). Laisse le statut en draft. Si aucun brouillon ne correspond à l'offre, dis-le clairement au lieu d'en modifier un au hasard. Rapporte pour chaque produit : titre final + id. Ne modifie jamais deux fois le même produit.
+RÈGLES : le tag "darri" est OBLIGATOIRE. NE TOUCHE PAS aux images ni aux prix (déjà appliqués par DSers). Laisse le statut en brouillon. Si aucun brouillon ne correspond, dis-le clairement au lieu d'en modifier un au hasard.
 
-⚠️ Connecteur requis : coche ton identifiant Shopify (domaine de la boutique + token shpat_ d'une custom app avec les scopes read_products et write_products). Prérequis boutique : l'app DSers doit être installée — c'est elle qui importe les produits et expédie les commandes.` } }
+RAPPORT pour chaque produit : titre final + id Shopify + (recopiés du rapport reçu) l'import_item_id, le prix de vente et le prix fournisseur — le Contrôleur en bout de chaîne en a besoin. Ne modifie jamais deux fois le même produit.
+
+⚠️ Connecteur requis : coche ton identifiant Shopify (token shpat_, scopes read_products et write_products).` } },
+        { id: 'g6', name: 'Contrôleur qualité & publication', x: 1460, y: 200, config: { icon: '🕵️', color: '#3ee6c1', temperature: 0.2, maxIterations: 10, retries: 2, retryDelay: 5, onError: 'continue', loop: 'foreach', loopMaxItems: 5, loopSplitHint: "un rapport de produit embelli avec son id Shopify et son import_item_id", mission:
+`Tu es le contrôleur qualité et publication de la boutique. Tu reçois UN rapport de produit : sa fiche travaillée, son id Shopify (brouillon) et son import_item_id DSers. Ta décision remplace la validation humaine : sois STRICT — au moindre doute, on ne publie pas.
+
+CONTRÔLES, dans l'ordre :
+1. Fiche réelle : GET /products/<id>.json (outil Shopify). Vérifie : titre en français clair SANS nom de marque (Dyson, Xiaomi, Bosch, Kärcher, Philips… = rejet) ; description HTML structurée contenant la mention de livraison « 7 à 15 jours » ; tag "darri" présent ; AU MOINS 2 images ; prix entre 9,90 et 59,90.
+2. Rentabilité et stock : dsers_product_preview sur l'import_item_id (outil DSers). Vérifie : prix de vente ≥ 2,5 × le coût fournisseur ; stock disponible ≥ 10 sur la variante principale ; devise cohérente avec la boutique.
+3. Nature du produit : un gadget du quotidien inoffensif. REJET automatique si : produit de marque ou contrefaçon, objet coupant/arme/laser puissant, allégation santé ou médicale, article de sécurité pour bébé (siège, couchage), électrique de puissance branché sur secteur.
+
+VERDICT :
+- TOUT est conforme → publie : PUT /products/<id>.json avec {"product": {"id": <id>, "status": "active"}} puis rapporte « ✅ PUBLIÉ : <titre> — <prix> ».
+- Un contrôle échoue ou le moindre doute → NE PUBLIE PAS, laisse en brouillon, rapporte « 🚫 RETENU : <titre> — motif : <explication précise> ».
+Ne modifie jamais rien d'autre que le statut. Ne publie jamais deux fois le même produit.
+
+⚠️ Connecteurs requis : coche TES DEUX identifiants — Shopify ET le Serveur MCP DSers.` } }
       ],
       connections: [
-        { from: 'g1', to: 'g2' }, { from: 'g2', to: 'g3' }, { from: 'g3', to: 'g4' }
+        { from: 'g1', to: 'g2' }, { from: 'g2', to: 'g3' }, { from: 'g3', to: 'g4' }, { from: 'g4', to: 'g5' }, { from: 'g5', to: 'g6' }
       ],
       settings: {}
     }
